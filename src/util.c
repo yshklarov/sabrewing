@@ -10,22 +10,26 @@
 #include <string.h>
 //#include <tgmath.h>
 
-
 #ifdef _WIN32
 
 #define WIN32_LEAN_AND_MEAN    // Exclude rarely-used definitions.
 #include <windows.h>
-#include <memoryapi.h>
 #include <io.h>
+#include <memoryapi.h>
+#include <synchapi.h>
 #define F_OK 0
 #define access _access
+#include <intrin.h>
 
 #else
 
+#include <errno.h>
 #include <sys/mman.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include <emmintrin.h>
+#include <x86intrin.h>
 
 #endif
 
@@ -236,15 +240,15 @@ void rand_init_from_seed(rand_state* x, u64 seed)
 // very fine on most platforms (less than 1 microsecond).
 u64 rand_get_seed_from_time()
 {
-#ifdef _WIN32
+  #ifdef _WIN32
     LARGE_INTEGER counter = {0};
     QueryPerformanceCounter(&counter);
     u64 seed = (u64)counter.QuadPart;
-#else
+  #else
     struct timeval tv;
     gettimeofday(&tv, NULL);
     u64 seed = (u64)tv.tv_usec;
-#endif
+  #endif
     return seed;
 }
 
@@ -324,6 +328,42 @@ void rand_combination(rand_state* x, u32 n, u32 k, bool combination[])
 bool file_exists(char const * filename)
 {
     return access(filename, F_OK) == 0;
+}
+
+
+/**************** Time ****************/
+
+void sleep_ms(u32 milliseconds) {
+  #ifdef _WIN32
+    Sleep(milliseconds);
+  #else
+    // Unfortunately, the more convenient usleep() has been deprecated.
+    struct timespec ts = {0};
+    ts.tv_sec = milliseconds / 1000;
+    ts.tv_nsec = (milliseconds % 1000) * 1000000;
+    while ((nanosleep(&ts, &ts) == -1) && errno == EINTR);
+  #endif
+}
+
+// Similar to get_time_ms(), but in units of 100 ns.
+u64 get_time_100ns() {
+  #ifdef _WIN32
+    SYSTEMTIME now_win32_st;
+    FILETIME now_win32_ft;
+    GetSystemTime(&now_win32_st);
+    SystemTimeToFileTime(&now_win32_st, &now_win32_ft);
+    return (u64)now_win32_ft.dwLowDateTime + ((u64)now_win32_ft.dwHighDateTime << 32);
+  #else
+    struct timespec now_linux = {0};
+    clock_gettime(CLOCK_MONOTONIC, &now_linux);
+    return ((u64)now_linux.tv_sec * 10000000) + (u64)(now_linux.tv_nsec / 100);
+  #endif
+}
+
+// Obtain a monotonically-increasing timestamp, in milliseconds. This is for measurements only --
+// do not use the return value for human-type timestamps.
+u64 get_time_ms() {
+    return get_time_100ns() / 10000000;
 }
 
 

@@ -18,10 +18,10 @@
 
 
 #include "util.c"
-
-#include "cpuinfo.c"
 #include "logger.c"
+#include "cpuinfo.c"
 #include "sort.c"
+#include "profiler.c"
 
 // TODO Make this into a unit test suite.
 // TODO (Perhaps) test for out-of-memory errors: https://news.ycombinator.com/item?id=37672784

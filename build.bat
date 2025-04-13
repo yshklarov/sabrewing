@@ -14,7 +14,7 @@
 
 @set SOURCES_IMGUI=%IMGUI_DIR%\imgui*.cpp %IMGUI_DIR%\backends\imgui_impl_dx9.cpp %IMGUI_DIR%\backends\imgui_impl_win32.cpp
 @set SOURCES_IMPLOT=%IMPLOT_DIR%\*.cpp
-@set SOURCES_PROJ=%SRC_DIR%\main_win32.cpp
+@set SOURCES_PROJ=%SRC_DIR%\gui_win32.cpp
 ::@set SOURCES=%SOURCES_PROJ% %SOURCES_IMGUI% %SOURCES_IMPLOT%
 
 @set LIBS=/LIBPATH:"%DXSDK_DIR%/Lib/x86" d3d9.lib

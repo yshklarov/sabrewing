@@ -157,7 +157,7 @@ void sample_constant(u32* data, u32 n, rand_state* rs, arena* scratch)
 void sample_mixture(u32* data, u32 n, rand_state* rs, arena* scratch)
 {
     u32 choice = rand_range_unif(rs, 0, ARRAY_SIZE(samplers) - 2);
-    return samplers[choice].fn(data, n, rs, scratch);
+    samplers[choice].fn(data, n, rs, scratch);
 }
 
 

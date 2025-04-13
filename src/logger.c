@@ -67,7 +67,7 @@ typedef struct
 timedate get_timedate()
 {
     timedate now;
-#ifdef _WIN32
+  #ifdef _WIN32
     SYSTEMTIME now_win32;
     GetLocalTime(&now_win32);
     now.year = (u16)now_win32.wYear;
@@ -78,7 +78,7 @@ timedate get_timedate()
     now.minute = (u8)now_win32.wMinute;
     now.second = (u8)now_win32.wSecond;
     now.millisecond = (u16)now_win32.wMilliseconds;
-#else
+  #else
     // WARNING: Not thread-safe.
     struct timespec now_linux = {0};
     struct tm tm_now = {0};
@@ -95,7 +95,7 @@ timedate get_timedate()
     now.minute = (u8)tm_now.tm_min;
     now.second = (u8)tm_now.tm_sec;
     now.millisecond = (u16)(now_linux.tv_nsec / 1000000);
-#endif
+  #endif
     return now;
 }
 
