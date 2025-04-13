@@ -9,6 +9,8 @@
 //#include <tchar.h>
 #include <thread>
 
+#include "IconsFontAwesome6.h"
+
 #include "util.c"
 #include "cpuinfo.c"
 #include "logger.c"
@@ -75,6 +77,9 @@ typedef struct
     i32 sampler_idx;
     i32 target_idx;
     timing_method timing;
+    // TODO Implement a smarter repeat method: Adaptive: Repeat until the three best results are
+    //      within 1% of one another, then take the mean of these three.
+    //repeat_method repeat;
     i32 repetitions;
     bool verify_correctness;
 }  profiler_params;
@@ -287,7 +292,8 @@ u64 measure_qpc_frequency()
 }
 
 // Probe the host for general information about the processor, etc.
-// Note: More detailed CPU information is available through Sysinternals Coreinfo.
+// Note: More detailed CPU information is available through Sysinternals Coreinfo and CPU-Z.
+// TODO Get realtime clock rate (like in CPU-Z).
 void query_host_info(host_info* host)
 {
     if (!host->initialized) {
@@ -352,7 +358,7 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info co
         rand_init_from_seed(&rand_state_local, params.seed);
 
         u64 n_idx = 0;
-        // TODO Prettier range loop, perhaps.
+        // TODO Prettier range loop.
         for (i32 n = params.ns.lower;
              n <= params.ns.upper;
              n += params.ns.stride) {
@@ -471,7 +477,7 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info co
     // Gather result for plotting.
     arena_tmp scratch = scratch_get(0, 0);
     f64* times = arena_push_array_zero(scratch.a, f64, sample_size);
-    // TODO Prettier range loop, perhaps.
+    // TODO Prettier range loop.
     u64 n_idx = 0;
     for (u64 n = params.ns.lower;
          n <= (u64)params.ns.upper;
@@ -511,9 +517,11 @@ void set_imgui_style(logger* l, ImGuiIO* io, bool is_dark, u8 font_size_pixels)
         ImGui::StyleColorsDark() :
         ImGui::StyleColorsLight();
 
-    // TODO load multiple fonts and use ImGui::PushFont()/PopFont() to select them (see FONTS.md).
-    // TODO AddFontFromFileTTF() returns ImFont*; store it so we can select it later.
-    // TODO Use '#define IMGUI_ENABLE_FREETYPE' in imconfig.h to use Freetype for higher quality
+    // TODO load multiple fonts (for code editing) and use ImGui::PushFont()/PopFont() to select
+    //      them (see FONTS.md). AddFontFromFileTTF() returns ImFont*; store it so we can select it
+    //      later.
+
+    // TODO Perhaps '#define IMGUI_ENABLE_FREETYPE' in imconfig.h to use Freetype for higher quality
     //      font rendering.
 
     // TODO Detect DPI changes and set style/scaling appropriately. See:
@@ -522,15 +530,18 @@ void set_imgui_style(logger* l, ImGuiIO* io, bool is_dark, u8 font_size_pixels)
 
     io->Fonts->ClearFonts();
     char const * font_filename = "../res/fonts/ClearSans-Regular.ttf";
+    // There are more solid icons freely available (many "regular" ones are non-free).
+    char const * icon_font_filename = "../res/fonts/FontAwesome6-solid-900.ttf";
+    //char const * icon_font_filename = "../res/fonts/FontAwesome6-regular-400.ttf";
 
     ImFont* font = 0;
+    ImFont* icon_font = 0;
+
     // ImGui has a built-in assert for when the file isn't found, so we must check, first.
     if (file_exists(font_filename)) {
         font = io->Fonts->AddFontFromFileTTF(font_filename, (f32)font_size_pixels);
         // Load glyphs for additional symbol codepoints.
         // To see which glyphs a font supports: Use https://fontdrop.info/
-        ImFontConfig config;
-        config.MergeMode = true;
         // For ImGui, this array's lifetime must persist.
         static const ImWchar extra_ranges[] = {
             // Basic multilingual plane.
@@ -539,15 +550,14 @@ void set_imgui_style(logger* l, ImGuiIO* io, bool is_dark, u8 font_size_pixels)
             // requires defining IMGUI_USE_WCHAR32 in imconfig.h, and a clean rebuild.
             //0x1EC70, 0x1FBFF,  // Additional symbols
             0 };
+
+        ImFontConfig config;
+        config.MergeMode = true;
         io->Fonts->AddFontFromFileTTF(
-                "../res/fonts/ClearSans-Regular.ttf",
-                (f32)font_size_pixels,
-                &config,
-                extra_ranges
+                font_filename, (f32)font_size_pixels, &config, extra_ranges
             );
     }
-    // TODO Use an icon font for icons (see FONTS.md): trash can and magnifier for results list.
-    if (font == nullptr) {
+    if (font == 0) {
         logger_appendf(l, LOG_LEVEL_ERROR,
                        "Failed to load font: %s. Falling back on ugly default font.",
                        font_filename);
@@ -555,6 +565,24 @@ void set_imgui_style(logger* l, ImGuiIO* io, bool is_dark, u8 font_size_pixels)
         // We have to scale the default font because it is very tiny.
         io->ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
     }
+
+    if (file_exists(icon_font_filename)) {
+        // Use an icon font for icons (see ImGui: FONTS.md).
+        // Example usage: ImGui::Button(ICON_FA_SEARCH " Search");
+        ImFontConfig config;
+        config.MergeMode = true;
+        config.GlyphMinAdvanceX = 13.0f; // Make the icons monospaced.
+        static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
+        f32 icon_scaling = 1.0f;
+        icon_font = io->Fonts->AddFontFromFileTTF(
+                icon_font_filename, (f32)font_size_pixels * icon_scaling, &config, icon_ranges);
+    }
+    if (icon_font == 0) {
+        logger_appendf(l, LOG_LEVEL_ERROR,
+                       "Failed to load icons: %s.",
+                       icon_font_filename);
+    }
+
     //io->Fonts->Build();  // Unnecessary.
     ResetDevice();
 
@@ -586,16 +614,25 @@ static void HelpMarker(const char* desc)
 static void PushBigButton()
 {
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(
-                                1 * ImGui::GetFontSize(),
-                                0.5f * ImGui::GetFontSize()));
+                                1.2f * ImGui::GetFontSize(),
+                                1.0f * ImGui::GetFontSize()));
 }
 static void PopBigButton() { ImGui::PopStyleVar(); }
+static f32 GetBigButtonHeightWithSpacing()
+{
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(
+                                1.2f * ImGui::GetFontSize(),
+                                1.0f * ImGui::GetFontSize()));
+    f32 result = ImGui::GetFrameHeightWithSpacing();
+    ImGui::PopStyleVar();
+    return result;
+}
 
-bool RightAlignedButton(char const * label) {
+/*bool RightAlignedButton(char const * label) {
     f32 width = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - width);
     return ImGui::Button(label);
-}
+}*/
 
 /**** Our windows ****/
 
@@ -608,7 +645,7 @@ void show_log_window(
     }
     ImGui::Begin("Log", &guiconf->visible_log_window);
 
-    if (ImGui::Button("Clear log")) {
+    if (ImGui::Button(ICON_FA_ERASER " Clear log")) {
         logger_clear(l);
     }
     ImGui::SameLine();
@@ -620,7 +657,7 @@ void show_log_window(
         ImGui::EndPopup();
     }
 
-    // TODO Add search/filter.
+    // TODO Add log search/filter textbox.
 
     ImGui::Separator();
 
@@ -658,9 +695,12 @@ void show_profiler_windows(
 
     static profiler_params next_run_params = profiler_params_default();
 
-    ImGui::PushItemWidth(ImGui::GetFontSize() * 10);
+    ImGui::BeginChild("ProfilerParamsConfigurationChild",
+                      ImVec2(0, -GetBigButtonHeightWithSpacing()));
+    {
 
     if (ImGui::CollapsingHeader("Sampler configuration", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PushItemWidth(ImGui::GetFontSize() * 10);
         if (ImGui::BeginCombo("Sampler", samplers[next_run_params.sampler_idx].name, 0)) {
             for (int i = 0; i < ARRAY_SIZE(samplers); i++) {
                 bool is_selected = (next_run_params.sampler_idx == i);
@@ -738,6 +778,7 @@ void show_profiler_windows(
     }
 
     if (ImGui::CollapsingHeader("Profiler options", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text(ICON_FA_ROTATE " "); ImGui::SameLine();
         ImGui::PushItemWidth(ImGui::GetFontSize() * 3);
         ImGui::DragInt(
                 "Repetitions",
@@ -765,7 +806,7 @@ void show_profiler_windows(
 
         ImGui::Separator();
 
-        ImGui::Text("Timing method:");
+        ImGui::Text(ICON_FA_HOURGLASS_HALF "  Timing method:");
         ImGui::SameLine(); HelpMarker(
                 "If in doubt, use QPC, as it gives the most reliable wall time interval. "
                 "\n\n"
@@ -788,7 +829,7 @@ void show_profiler_windows(
 
         ImGui::Separator();
 
-        ImGui::Text("Timer information:");
+        ImGui::Text(ICON_FA_CIRCLE_INFO "  Timer information:");
         if (ImGui::BeginTable("TimerInfo", 4, ImGuiTableFlags_SizingFixedFit)) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -824,6 +865,7 @@ void show_profiler_windows(
 
         ImGui::Separator();
 
+        ImGui::Text(ICON_FA_LIST_CHECK " "); ImGui::SameLine();
         ImGui::Checkbox("Verify correctness of target output", &next_run_params.verify_correctness);
         ImGui::SameLine(); HelpMarker(
                 "Verification involves a simple checksum, and may (occasionally) give false "
@@ -873,8 +915,11 @@ void show_profiler_windows(
         }
     }
 
+    }
+    ImGui::EndChild();
+
     PushBigButton();
-    bool go_requested = ImGui::Button("Go!");
+    bool go_requested = ImGui::Button("Begin!   " ICON_FA_DRAGON);
     PopBigButton();
     if (go_requested) {
         profiler_result result = profiler_execute(l, next_run_params, host);
@@ -894,19 +939,84 @@ void show_profiler_windows(
     // TODO Refactor: Move these secondary ImGui windows (profiler result list; profiler plot) into
     // own helper functions.
 
-    ImGui::Begin("Profiler Runs");
+    ImGui::Begin("Results List");
     static bool visible_display_options = true;
     // TODO Ewww! Do layout better.
-    ImGui::BeginChild("ProfilerRunsChild",
-                      ImVec2(0, -(2 + (visible_display_options ? 5 : 0)) *
+    ImGui::BeginChild("ProfilerResultsChild",
+                      ImVec2(0, -(1 + (visible_display_options ? 5 : 0)) *
                              ImGui::GetFrameHeightWithSpacing()));
     {
-        if (ImGui::BeginTable("ResultsList", 3)) {
-            ImGui::TableSetupColumn("ResultName", ImGuiTableColumnFlags_WidthFixed);
-            ImGui::TableSetupColumn("ResultDetails", ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableSetupColumn("DeleteResult", ImGuiTableColumnFlags_WidthFixed);
-            // TODO A "global" column with global checkbox and global magnifier
+        if (ImGui::BeginTable("ResultsList", 3, ImGuiTableFlags_ScrollY)) {
+            ImGui::TableSetupScrollFreeze(0, 1);  // Top row always visible.
+            ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Details", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Delete", ImGuiTableColumnFlags_WidthFixed);
             // TODO Drag & drop results to reorder; support multi-select drag & drop.
+            // TODO Magnifier in results list: Auto-zoom to a single results item, and to all.
+
+            // Table header
+
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            // No header behind checkbox/icons, because that would be ugly.
+            //ImGui::TableHeader("##Visible");
+            //ImGui::SameLine(0,0);
+            usize num_results_visible = 0;
+            // Recomputing every frame. Eww!
+            for (usize i = 0; i < results->len; ++i) {
+                if (results->data[i].plot_visible) {
+                    ++num_results_visible;
+                }
+            }
+            bool all_visible = (num_results_visible == results->len) && (results->len > 0);
+            // TODO Find, or build, a three-way checkbox with a "partial" setting.
+            ImGui::BeginDisabled(results->len == 0);
+            f32 checkbox_size = ImGui::GetFrameHeight();
+            if (ImGui::Button(ICON_FA_CHART_LINE "##AllResultsVisibility",
+                              ImVec2(checkbox_size, checkbox_size))) {
+                for (usize i = 0; i < results->len; ++i) {
+                    results->data[i].plot_visible = !all_visible;
+                }
+            }
+            ImGui::EndDisabled();
+
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TableHeader("##Details");
+            ImGui::SameLine(0,0);
+            ImGui::Text("Result Details");
+
+            ImGui::TableSetColumnIndex(2);
+            //ImGui::TableHeader("##Delete");
+            //ImGui::SameLine(0,0);
+            ImGui::BeginDisabled(results->len == 0);
+            if (ImGui::Button(ICON_FA_TRASH_CAN)) {
+                ImGui::OpenPopup("Delete all results");
+            }
+            ImGui::EndDisabled();
+            if (ImGui::BeginPopup("Delete all results", NULL)) {
+                if (results->len == 0) {
+                    // User already cleared the data in some other way.
+                    ImGui::CloseCurrentPopup();
+                }
+                ImVec2 popup_button_size = ImVec2(ImGui::GetFontSize() * 3.5f, 0.f);
+                ImGui::Text("Delete all results?");
+                if (ImGui::Button("Confirm", popup_button_size)) {
+                    logger_appendf(l, LOG_LEVEL_DEBUG, "Destroying %d %s.", results->len,
+                                   (results->len == 1) ? "result" : "results");
+                    for (usize i = 0; i < results->len; ++i) {
+                        result_destroy(&(results->data[i]));
+                    }
+                    darray_profiler_result_clear(results);
+                    //requested_clear_all = false;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", popup_button_size)) {
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
+
+            // Table contents
 
             bool delete_requested = false;
             u64 delete_idx = 0;
@@ -920,7 +1030,7 @@ void show_profiler_windows(
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
                 ImGui::Checkbox("", &result->plot_visible);
-                ImGui::SameLine();
+                //ImGui::SameLine();
                 ImGui::TableSetColumnIndex(1);
                 if (result->verification_failure_count > 0) {
                     ImU32 badness_color = (ImU32)(0x600000FF);
@@ -932,14 +1042,29 @@ void show_profiler_windows(
                                       ImGuiTreeNodeFlags_AllowOverlap
                         )) {
                     profiler_params* p = &result->params;
+                    if (ImGui::Button(ICON_FA_ARROW_RIGHT_TO_BRACKET " Again")) {
+                        next_run_params = *p;
+                    }
+                    ImGui::SameLine();
+                    HelpMarker("Re-load these parameters for the next run.");
                     ImGui::Text("Sampler: %s", samplers[p->sampler_idx].name);
                     ImGui::Text("Range: (%d, %d, %d)", p->ns.lower, p->ns.stride, p->ns.upper);
                     ImGui::Text("Sample size: %d", p->sample_size);
                     ImGui::Text("Total units: %d", result->len_units);
                     ImGui::Text("Seed: %llu", p->seed);
+                    /*  // Copy to clipboard -- works, but is very ugly.
+                    ImGui::SameLine();
+                    if (ImGui::Button(ICON_FA_CLIPBOARD)) {
+                        #define MAX_SEED_STR_LEN 21
+                        char seed_str[MAX_SEED_STR_LEN] = {0};
+                        snprintf(seed_str, 21, "%llu", p->seed);
+                        ImGui::SetClipboardText(seed_str);
+                        #undef MAX_SEED_STR_LEN
+                    }
+                    */
                     ImGui::Text("Timing: %s", timing_method_str[p->timing]);
                     ImGui::Text("Repetitions: %d", p->repetitions);
-                    ImGui::Text("Output verification: %s", p->verify_correctness
+                    ImGui::Text("Verification: %s", p->verify_correctness
                                 ? (0 == result->verification_failure_count
                                    ? "Succeeded"
                                    : "Failed")
@@ -951,24 +1076,20 @@ void show_profiler_windows(
                     //    - Profiling progress bar, with "pause"/"continue" button; hide results by
                     //      default while profiling, but allow user to manually select checkbox to
                     //      view live results in graph as they arrive.
-                    if (ImGui::Button("Load these parameters")) {
-                        next_run_params = *p;
-                    }
                     ImGui::TreePop();
                 }
                 ImGui::TableSetColumnIndex(2);
                 // TODO Table column with zoom magnifier. See: Icon fonts (ImGui: FONTS.md);
                 //      Zooming to fit will require storing (double min/max for each axis)
                 //      in the struct profiler_result.
-                // TODO Closed/open Trash / wastepaper basket icon. See: Icon fonts (ImGui: FONTS.md).
-                if (ImGui::SmallButton("×")) {
-                    // TODO Confirm: Change icon to "open trash" and require double-press.
-                    // Queue for later, so we don't invalidate the loop.
+                if (ImGui::Button(ICON_FA_XMARK)) {
+                    // TODO Prompt for confirmation, maybe?
+                    // Queue deletion for later, so we don't invalidate the loop index.
                     delete_requested = true;
                     delete_idx = i;
                 }
                 ImGui::PopID();
-            }
+            }  // for each result
             if (delete_requested) {
                 logger_appendf(l, LOG_LEVEL_DEBUG,
                                "Destroying result ID %d.", results->data[delete_idx].id);
@@ -976,38 +1097,9 @@ void show_profiler_windows(
                 darray_profiler_result_remove(results, delete_idx);
             }
             ImGui::EndTable();
-        }
+        }  // table
     }
-
     ImGui::EndChild();
-
-    {
-        ImGui::BeginDisabled(results->len == 0);
-        if (RightAlignedButton("Clear all data")) {
-            ImGui::OpenPopup("Clear all data");
-        }
-        ImGui::EndDisabled();
-        if (ImGui::BeginPopup("Clear all data", NULL)) {
-            if (results->len == 0) {
-                // User already cleared the data in some other way.
-                ImGui::CloseCurrentPopup();
-            }
-            ImVec2 popup_button_size = ImVec2(ImGui::GetFontSize() * 3.5f, 0.f);
-            if (ImGui::Button("Confirm", popup_button_size)) {
-                logger_appendf(l, LOG_LEVEL_DEBUG, "Destroying %d %s.", results->len,
-                               (results->len == 1) ? "result" : "results");
-                for (usize i = 0; i < results->len; ++i) {
-                    result_destroy(&(results->data[i]));
-                }
-                darray_profiler_result_clear(results);
-                //requested_clear_all = false;
-            }
-            if (ImGui::Button("Cancel", popup_button_size)) {
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::EndPopup();
-        }
-    }
 
     // TODO For details on how to plot heterogeneous data, see implot.h:806.
     visible_display_options = ImGui::CollapsingHeader(
@@ -1050,7 +1142,7 @@ void show_profiler_windows(
                 ImPlotFlags_Crosshairs
             )) {
 
-        // TODO Allow user to select between nanoseconds and TSC units -- if I can come up with
+        // TODO Allow user to select between nanoseconds and TSC units -- if we can come up with
         //      a reasonable thing to do when two plots are shown together with different units.
         char const* time_axis_label = "Time (ns)";
         ImPlot::SetupAxes("n", time_axis_label, 0, 0);
@@ -1109,9 +1201,9 @@ void show_profiler_windows(
 
             if (guiconf->visible_data_individual) {
                 // TODO This gets slow when there are more than 10-30,000 points. Either (easiest)
-                // resample (only plot a subset of points), or implement our own PlotScatter that
-                // doesn't use ImDrawList but instead renders directly (with a shader?), or find
-                // some other solution.
+                // resample (only plot a subset of points), or (better!) implement our own
+                // PlotScatter that doesn't use ImDrawList but instead renders directly using
+                // graphics shaders, or find some other solution.
 
                 // NOTE ImPlotMarker_Circle looks nicer than ImPlotMarker_Cross, but 3 times slower.
                 // (The marker geometry is described in implot_items.cpp).
@@ -1164,8 +1256,9 @@ int main(int, char**)
     }
 
     // Win32: Show the window.
-    // TODO Restore maximized/restored state from before, just like remedybg.
-    // See: https://learn.microsoft.com/en-us/windows/
+    // TODO Restore maximized/restored state from before, just like remedybg. In fact, restore all
+    //      GUI settings.
+    //      See: https://learn.microsoft.com/en-us/windows/
     //         win32/api/winuser/nf-winuser-showwindow?redirectedfrom=MSDN
     ::ShowWindow(hwnd, SW_MAXIMIZE);
     //::ShowWindow(hwnd, SW_SHOWDEFAULT);
