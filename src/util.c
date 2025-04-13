@@ -190,7 +190,7 @@ void util_maxheap(f64* data, u32 n)
     }
 }
 
-// Heapsort.
+// Heapsort. TODO Switch to introsort (copy from sort.c).
 void util_sort(f64* data, u32 n)
 {
     if (n < 2) return;

@@ -36,12 +36,14 @@ static const sampler_sort samplers[] =
 };
 
 // TODO
-//  - Modify quicksort to use another stack (not the call stack).
-//  - Radix sort (find a way to make this interesting: another input distribution; bound parameters)
-void sort_quick(u32*, u32, rand_state*, arena*);
-void sort_merge(u32*, u32, rand_state*, arena*);
+//     - Implement {radix sort, bucket sort, bitmap sort} (requires new samplers)
+//     - Implement {timsort, powersort} (requires new samplers)
 void sort_heap(u32*, u32, rand_state*, arena*);
+void sort_merge(u32*, u32, rand_state*, arena*);
 void sort_shell(u32*, u32, rand_state*, arena*);
+void sort_quick(u32*, u32, rand_state*, arena*);
+void sort_quickr(u32*, u32, rand_state*, arena*);
+void sort_intro(u32*, u32, rand_state*, arena*);
 void sort_insertion(u32*, u32, rand_state*, arena*);
 void sort_selection(u32*, u32, rand_state*, arena*);
 void sort_bubble(u32*, u32, rand_state*, arena*);
@@ -51,10 +53,12 @@ void sort_broken(u32*, u32, rand_state*, arena*);
 void sort_miracle(u32*, u32, rand_state*, arena*);
 static const target_sort targets[] =
 {
-    {"Quicksort", "Splits the array according to a pivot; then sorts each side.", sort_quick},
-    {"Merge sort", "Sorts each half separately; then merges them.", sort_merge},
     {"Heapsort", "Builds a max-heap; then repeatedly moves the root to the end.", sort_heap},
+    {"Merge sort", "Sorts each half separately; then merges them.", sort_merge},
     {"Shellsort", "Insertion-sorts all kth elements, for smaller and smaller k.", sort_shell},
+    {"Quicksort", "Splits the array according to a pivot; then sorts each side.", sort_quick},
+    {"Quicksort (randomized)", "Picks the pivot randomly.", sort_quickr},
+    {"Introsort", "Like quicksort, but delegates to heapsort and insertion sort.", sort_intro},
     {"Insertion sort", "Builds up a sorted array element-by-element.", sort_insertion},
     {"Selection sort", "Finds least element of those remaining and appends it.", sort_selection},
     {"Bubble sort", "Compares and swaps adjacent pairs.", sort_bubble},
@@ -237,7 +241,7 @@ void sort_gnome(u32* data, u32 n, rand_state* rs, arena* scratch)
     }
 }
 
-// Requires n >= 2.
+// WARNING Recursive: may cause stack overflow.
 void sort_quick_(u32* data, u32 n)
 {
     u32* data_last = data + n - 1;
@@ -254,9 +258,7 @@ void sort_quick_(u32* data, u32 n)
             --back;
         }
     }
-    // TODO Implement this quicksort non-recursively, because this could cause a stack overflow
-    // in occasional unbalanced cases for very large lists (on the order of 100,000 elements).
-    if (front - data > 1) {  // Note: front == back.
+    if (front - data > 1) {
         sort_quick_(data, (u32)(front - data));
     }
     if (data_last - front > 1) {
@@ -264,12 +266,104 @@ void sort_quick_(u32* data, u32 n)
     }
 }
 
-// Naive in-place Quicksort.
+// WARNING Recursive: may cause stack overflow.
 void sort_quick(u32* data, u32 n, rand_state* rs, arena* scratch)
 {
     (void)scratch; (void)rs;
     if (n < 2) return;
     sort_quick_(data, n);
+}
+
+void sort_intro_(u32* data, u32 n, u32 max_recurse)
+{
+    if (n < 16) {
+        // Delegate.
+        sort_insertion(data, n, NULL, NULL);
+        return;
+    }
+    if (max_recurse == 0) {
+        // Delegate.
+        sort_heap(data, n, NULL, NULL);
+        return;
+    }
+    u32* data_last = data + n - 1;
+    u32* front = data;
+    u32* back = data_last;
+    u32 pivot = *back;
+    while (front < back) {
+        if (*front < pivot) {
+            ++front;
+        } else {
+            *back = *front;
+            *front = *(back-1);
+            *(back-1) = pivot;
+            --back;
+        }
+    }
+    if (front - data > 1) {
+        sort_intro_(data, (u32)(front - data), max_recurse - 1);
+    }
+    if (data_last - front > 1) {
+        sort_intro_(front + 1, (u32)(data_last - front), max_recurse - 1);
+    }
+}
+
+void sort_intro(u32* data, u32 n, rand_state* rs, arena* scratch)
+{
+    (void)scratch; (void)rs;
+    if (n < 2) return;
+    u32 max_recurse = 0;
+    for (int k = n; k > 0; k /= 2) {
+        ++max_recurse;
+    }
+    max_recurse *= 2;  // Approximately 2 * log_2 (n).
+    sort_intro_(data, n, max_recurse);
+}
+
+// WARNING Recursive: may cause stack overflow.
+void sort_quickr_(u32* data, u32 n, rand_state* rs)
+{
+    u32* data_last = data + n - 1;
+    u32* front = data;
+    u32* back = data_last;
+    // Don't waste time for tiny lists.
+    if (n >= 8) {
+        u32 pivot_idx = rand_range_unif(rs, 0, n-1);
+        SWAP_u32(data[pivot_idx], *back);
+    }
+    u32 pivot = *back;
+    bool constant_data = true;
+    while (front < back) {
+        if (*front != pivot) {
+            constant_data = false;
+        }
+        if (*front < pivot) {
+            ++front;
+        } else {
+            *back = *front;
+            *front = *(back-1);
+            *(back-1) = pivot;
+            --back;
+        }
+    }
+    if (constant_data) {
+        // Avoid quadratic slowdown.
+        front = data + ((data_last - data)/2);
+    }
+    if (front - data > 1) {
+        sort_quickr_(data, (u32)(front - data), rs);
+    }
+    if (data_last - front > 1) {
+        sort_quickr_(front + 1, (u32)(data_last - front), rs);
+    }
+}
+
+// WARNING Recursive: may cause stack overflow.
+void sort_quickr(u32* data, u32 n, rand_state* rs, arena* scratch)
+{
+    (void)scratch;
+    if (n < 2) return;
+    sort_quickr_(data, n, rs);
 }
 
 u32 sort_shell_tokuda_gap(u32 k)
