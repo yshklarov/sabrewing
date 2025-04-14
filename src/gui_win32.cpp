@@ -249,7 +249,7 @@ void show_profiler_windows(
         gui_config* guiconf,
         logger* l,
         arena* a,
-        host_info const* host,
+        host_info* host,
         darray_profiler_result* results)
 {
     ImGui::Begin("Profiler" /*, visible*/);
@@ -369,13 +369,16 @@ void show_profiler_windows(
 
         ImGui::Text(ICON_FA_HOURGLASS_HALF "  Timing method:");
         ImGui::SameLine(); HelpMarker(
-                "If in doubt, use QPC, as it gives the most reliable wall time interval. "
+                "If in doubt, pick RDTSC, as it is highly precise and fairly reliable, and exists "
+                "on all x86-64 CPUs."
                 "\n\n"
-                "If you require a very fine time resolution (finer than the QPC period), pick "
-                "RDTSC. This will only work on x86 platforms, and may give unreliable "
-                "data on very old CPUs with non-invariant TSC registers."
+                "On some newer AMD CPUs, RDPRU (not yet implemented) is more accurate than RDTSC."
                 "\n\n"
-                "Both QTCT and QPCT often use RDTSC internally, but when the thread (resp. "
+                "Another decent choice (on Windows only) is QPC. Note that there's no benefit to "
+                "using QPC when RDTSC is available, because QPC uses the TSC internally, but has "
+                "a lower resolution."
+                "\n\n"
+                "Both QTCT and QPCT also often use RDTSC internally, but when the thread (resp. "
                 "process) is pre-empted they compensate by subtracting. Note that QPCT gives the "
                 "_sum_ of timings of all threads in the current process, including those unrelated "
                 "to the profiler target, so its output data will be higher. These two methods "
@@ -389,6 +392,11 @@ void show_profiler_windows(
                 }
             }
         }
+        ImGui::Checkbox("Adjust for timer overhead", &next_run_params.adjust_for_timer_overhead);
+        ImGui::SameLine(); HelpMarker(
+                "Try to measure, and compensate for, the time required to execute the timing "
+                "instructions.\n\n"
+                "This is unreliable for certain systems and/or timing methods.");
 
         ImGui::Separator();
 
@@ -413,16 +421,17 @@ void show_profiler_windows(
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0); ImGui::Text("TSC:");
             ImGui::TableSetColumnIndex(1);
-            ImGui::Text("%.3f ns", host->tsc_period * 1000000000);
+            ImGui::Text("%.3f ns", (host->tsc_frequency == 0) ? 0.0f : (1.e9f / host->tsc_frequency));
             ImGui::TableSetColumnIndex(2);
-            ImGui::Text("%.0f MHz", (host->tsc_period == 0.0f) ? 0.0f : (0.000001f / host->tsc_period));
+            ImGui::Text("%.0f MHz", host->tsc_frequency * 1e-6f);
             ImGui::TableSetColumnIndex(3); HelpMarker(
-                "This is a measured estimate.\n\n"
                 "Time Stamp Counter (TSC) units are (approximately) CPU clock cycles, so on a"
                 "4.0 GHz CPU a TSC unit is around 1/4 ns. The TSC units may be slightly shorter "
                 "than core crystal clock cycles. On very old CPUs, TSC units correspond exactly to "
                 "CPU cycles, whereas modern CPUs have an \"Invariant TSC\" that runs at a constant "
-                "frequency, independent of dynamic frequency scaling.");
+                "frequency, independent of dynamic frequency scaling."
+                "\n\n"
+                "This is a measured estimate (because most CPUs cannot report the TSC frequency).");
 
             ImGui::EndTable();
         }
@@ -883,7 +892,7 @@ int main(int, char**)
     // Main loop
     bool done = false;
     while (!done) {
-        query_host_info(&host);
+        query_host_info(&host);  // Inside loop, to update timer data.
 
         // Poll and handle messages (inputs, window resize, etc.)
         // See the WndProc() function below for our to dispatch events to the Win32 backend.

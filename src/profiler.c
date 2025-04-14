@@ -1,7 +1,23 @@
-/**** Types ****/
+// TODO Add option to "warm up" the CPU to bring it up to its base (or boost?) clock rate
+//      before starting the main workload.
+// TODO query_host_info() should get the realtime clock rate (like in CPU-Z).
+// TODO Add: RDTSCP
+// TODO Add: timing method(s) for Linux: clock_gettime with CLOCK_MONTONIC_RAW.
+// TODO Add: HPET and/or ACPI PM timers
+// TODO Add: RDPMC (may require some sort of privilege escalation)
+// TODO Add: RDPRU for certain AMD Zen CPUs, because RDTSC/RDTSCP is too coarse-grained on those.
+// TODO Look into Intel PCM (Performance Counter Montitor) for detailed diagnostics, such as:
+//      L2/L3 cache hits/misses, branches, core frequency, instructions retired, memory bytes
+//      read/written, etc.
+// TODO Look into Windows PMU (for branch mispredictions, cache misses, etc.): See
+//      https://learn.microsoft.com/en-us/windows-hardware/test/wpt/recording-pmu-events
+// TODO Add: ARM GIT (Generic Interval Timer)
+// TODO Add: ARM Performance Monitors Cycle Counter
+// TODO Find a way to detect process pre-empting, so we can restart the test, so we can
+//      save time.
 
-// TODO Add timing method: GetTickCount64() (very coarse: 10-16 ms).
-// TODO Add timing method(s) for Linux: UNIX CLOCK_MONTONIC_RAW; ..?
+
+/**** Types ****/
 
 typedef enum
 {
@@ -29,16 +45,25 @@ static timing_method timing_methods[TIMING_METHOD_ID_MAX] =
     { "QPCT", "Win32 QueryProcessCycleTime (QPCT)", false, true },
 };
 
+/*
+typedef enum
+{
+    OS_WINDOWS,
+    OS_LINUX
+} operating_system;
+*/
+
 typedef struct
 {
     bool initialized;
+    //operating_system os;
     char cpu_name[48];
     u32 cpu_num_cores;
     u32 cpu_cache_l1;
     u32 cpu_cache_l2;
     u32 cpu_cache_l3;
     u64 qpc_frequency;
-    f32 tsc_period;
+    u64 tsc_frequency;
     bool has_tsc;
     bool has_invariant_tsc;
 } host_info;
@@ -57,8 +82,9 @@ typedef struct
     i32 sampler_idx;
     i32 target_idx;
     timing_method_id timing;
+    bool adjust_for_timer_overhead;
     // TODO Implement a smarter repeat method: Adaptive: Repeat until the three best results are
-    //      within 1% of one another, then take the mean of these three.
+    //      within <xx>% of one another, then take the mean of these three.
     //repeat_method repeat;
     i32 repetitions;
     bool verify_correctness;
@@ -78,7 +104,7 @@ profiler_params profiler_params_default()
     rtn.sampler_idx = 0;
     rtn.target_idx = 0;
     rtn.timing = TIMING_RDTSC;
-    //rtn.timing = TIMING_QPC;
+    rtn.adjust_for_timer_overhead = false;
     rtn.repetitions = 10;
     rtn.verify_correctness = true;
 
@@ -92,7 +118,6 @@ typedef struct
     f64 time;  // nanoseconds
     // TODO Add metadata:
     //   - RNG state used (se we can re-create the input)
-    //   - Various CPU statistics (cache misses, branches, etc.)
 } profiler_result_unit;
 
 // Summary statistics for a batch of test units.
@@ -109,9 +134,10 @@ typedef struct
 typedef struct
 {
     // TODO Add metadata:
-    //   - Wall time began
+    //   - Wall time began (call get_timedate() from util.c)
     //   - Wall time completed
     //   - Total wall time elapsed (yes, store separately, because of possible time changes)
+
     arena local_arena;  // Memory container; lifetime is until this result is freed.
     u64 id;  // id==0 indicates that this is a stub (uninitialized, or already destroyed).
 
@@ -182,35 +208,39 @@ void result_destroy(profiler_result* result)
 }
 
 
-// Estimate the period of the TSC, in seconds. E.g., return 0.5e-9 if the TSC runs at 2.0 GHz.
+// Estimate the frequency of the TSC, in Hz.
 //
-// The first time this function is called, it will return 0.0.
+// This is done by measurement, by calling out to another (monotonic, high-resolution) OS-provided
+// wall timer. Note that it's not possible to do this in any other way (except by manually building
+// a comprehensive database of CPU models) because the majority of x86 CPUs do not have instructions
+// to provide this data.
+//
+// The first time this function is called, it will return 0.
 // If invariant_tsc == true, it will return more accurate successive estimates each time it's called.
 // If invariant_tsc == false, it will only use the last two times it was called as an interval
-// for measurement.
+// for measurement; the result will be more accurate, but less precise.
 //
-// TODO Debug: Why does this seem to return too fine a period on linux/wine?
+// Note: It would also possible to fetch the TSC frequency from the Linux kernel.
 //
-f32 measure_tsc_period(bool invariant_tsc)
+u64 measure_tsc_frequency(bool invariant_tsc)
 {
     // TODO Eliminate these global variables -- they should be passed in as part of a host_info.
     static bool already_called = false;
     static u64 tsc_initial = 0;
     static u64 wall_time_initial = 0;
     if (!already_called) {
-        wall_time_initial = get_time_100ns();
+        wall_time_initial = get_ostime_100ns();
         _mm_lfence();
         tsc_initial = __rdtsc();
         already_called = true;
-        return 0.0f;
+        return 0;
     }
 
-    // TODO Fences (see https://stackoverflow.com/a/12634857/1989005)
     _mm_lfence();
     u64 tsc_now = __rdtsc();
     u64 tsc_elapsed = tsc_now - tsc_initial;
 
-    u64 wall_time_now = get_time_100ns();
+    u64 wall_time_now = get_ostime_100ns();
     u64 wall_time_elapsed = wall_time_now - wall_time_initial;
 
     if (!invariant_tsc) {
@@ -219,21 +249,155 @@ f32 measure_tsc_period(bool invariant_tsc)
         wall_time_initial = wall_time_now;
     }
 
-    return 0.0000001f * ((f32)wall_time_elapsed / MAX(1ll, tsc_elapsed));
+    return 10000000u * tsc_elapsed / MAX(1ll, wall_time_elapsed);
 }
 
 #ifdef _WIN32
-u64 measure_qpc_frequency()
+u64 get_qpc_frequency()
 {
-    LARGE_INTEGER qpc_frequency = {0};
-    QueryPerformanceFrequency(&qpc_frequency);
+    // The QPC frequency is fixed at system boot, and guaranteed not to change.
+    static LARGE_INTEGER qpc_frequency = {0};
+    if (!qpc_frequency.QuadPart) {
+        QueryPerformanceFrequency(&qpc_frequency);
+    }
     return qpc_frequency.QuadPart;
 }
 #endif
 
+// Return the value of the given timer.
+u64 get_timer_value(timing_method_id tmid)
+{
+    // This is branchy, but not overly so. If the user cares about the extra dozen instructions due
+    // to calling this function (as opposed to calling, say, __rdtsc() directly), they can adjust by
+    // subtracting get_timer_overhead().
+    switch(tmid) {
+    case TIMING_RDTSC: {
+        _mm_lfence();
+        return __rdtsc();
+    } break;
+    case TIMING_QPC: {
+        #ifdef _WIN32
+        LARGE_INTEGER qpc_now;
+        QueryPerformanceCounter(&qpc_now);
+        return qpc_now.QuadPart;
+        #else
+        assertm(false, "The requested timing method is unavailable on this platform.");
+        return 0;
+        #endif
+    } break;
+    case TIMING_QTCT: {
+        #ifdef _WIN32
+        u64 time_now;
+        HANDLE current_thread = GetCurrentThread();
+        QueryThreadCycleTime(current_thread, &time_now);
+        return time_now;
+        #else
+        assertm(false, "The requested timing method is unavailable on this platform.");
+        return 0;
+        #endif
+    } break;
+    case TIMING_QPCT: {
+        #ifdef _WIN32
+        u64 time_now;
+        HANDLE current_process = GetCurrentProcess();
+        QueryProcessCycleTime(current_process, &time_now);
+        return time_now;
+        #else
+        assertm(false, "The requested timing method is unavailable on this platform.");
+        return 0;
+        #endif
+    } break;
+    default: {
+        assertm(false, "The requested timing method is unimplemented.");
+        return 0;
+    } break;
+    }
+}
+
+// Return the frequency of the given timer in Hz.
+u64 get_timer_frequency(timing_method_id tmid, host_info* host)
+{
+    switch(tmid) {
+    case TIMING_RDTSC: {
+        return measure_tsc_frequency(host->has_invariant_tsc);
+    } break;
+    case TIMING_QPC: {
+        #ifdef _WIN32
+        return get_qpc_frequency();
+        #else
+        assertm(false, "The requested timing method is unimplemented.");
+        return 0;
+        #endif
+    } break;
+    case TIMING_QTCT:
+    case TIMING_QPCT: {
+        #ifdef _WIN32
+        // MSDN doesn't recommend this. But we have to do it somehow, and this seems to work.
+        return measure_tsc_frequency(host->has_invariant_tsc);
+        #else
+        assertm(false, "The requested timing method is unimplemented.");
+        return 0;
+        #endif
+    } break;
+    default: {
+        assertm(false, "The requested timing method is unimplemented.");
+        return 0;
+    } break;
+    }
+}
+
+// Get the overhead resulting from using the timer: time between successive calls.
+// This function tests a large number of repetitions to get a good measurement.
+u64 get_timer_overhead(timing_method_id tmid, u32 timeout_milliseconds)
+{
+    // Our process might be pre-empted, so we need to do this many times to be very sure that we
+    // don't over-estimate the overhead.
+
+    // This is stupid, but it works -- for most timing methods. Except QueryProcessCycleTime is
+    // finicky and unreliable; trying to measure it gives extremely unpredictable results. Still, we
+    // allow it, in case the user really wants it.
+
+    // Note also: Some timing methods (QPCT!) are simply inconsistent in how long they take; still,
+    // we look for the *minimum* time, because it would very bad to over-estimate.
+
+    u64 timeout_us = timeout_milliseconds * 1000;
+    u64 start_time = get_ostime_us();
+
+    // "Good values" are those that are very close to the minimum value found so far.
+    u64 min_overhead = U64_MAX;
+    u32 good_values_found = 0;
+    u32 good_values_needed = 30;
+    bool done = false;
+    while (!done) {
+        for (u32 i = 0; i < 5; ++i) {
+            u64 one = get_timer_value(tmid);
+            u64 two = get_timer_value(tmid);
+            u64 overhead = two - one;
+            if (overhead < min_overhead) {
+                min_overhead = overhead;
+                good_values_found = 1;
+            } else {
+                if ((overhead == min_overhead) ||
+                    (min_overhead / (overhead - min_overhead) > 30)) {
+                    ++good_values_found;
+                    if (good_values_found == good_values_needed) {
+                        done = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (get_ostime_us() - start_time >= timeout_us) {
+            break;
+        }
+    }
+    return min_overhead;
+}
+
+
+
 // Probe the host for general information about the processor, etc.
 // Note: More detailed CPU information is available through Sysinternals Coreinfo and CPU-Z.
-// TODO Get realtime clock rate (like in CPU-Z).
 void query_host_info(host_info* host)
 {
     if (!host->initialized) {
@@ -246,27 +410,24 @@ void query_host_info(host_info* host)
                 &host->cpu_cache_l1,
                 &host->cpu_cache_l2,
                 &host->cpu_cache_l3);
-    #ifdef _WIN32
-        host->qpc_frequency = measure_qpc_frequency();
-     #endif
+        #ifdef _WIN32
+        // QPC frequency is fixed at system boot.
+        host->qpc_frequency = get_qpc_frequency();
+        #else
+        host->qpc_frequency = 0;
+        #endif
         host-> initialized = true;
     }
 
     // Measure continually, because (on some systems) it may change, and in any case
     // we can get a more precise estimate by measuring over longer time periods.
-    host->tsc_period = measure_tsc_period(host->has_invariant_tsc);
+    host->tsc_frequency = measure_tsc_frequency(host->has_invariant_tsc);
 }
 
 
-profiler_result profiler_execute(logger* l, profiler_params params, host_info const* host)
+profiler_result profiler_execute(logger* l, profiler_params params, host_info* host)
 {
     logger_append(l, LOG_LEVEL_INFO, "Starting profiler run.");
-
-    // TODO Save Hardware Performance (PMU): branch mispredictions, cache misses, etc.: See
-    //      https://learn.microsoft.com/en-us/windows-hardware/test/wpt/recording-pmu-events
-    //      And/or Intel getSystemCounterState()?
-    // TODO Find a way to detect process pre-empting, so we can restart the test, so we can
-    //      save time.
 
     // Save metadata and results for this profiler run.
     profiler_result result = result_create(params);
@@ -282,20 +443,16 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info co
     fn_sampler_sort sampler = samplers[params.sampler_idx].fn;
     fn_target_sort target = targets[params.target_idx].fn;
 
-    u64 tsc_initial = 0;
-    u64 tsc_final = 0;
-    u64 tsc_delta = 0;  // (Invariant) TSC units elapsed.
-    f32 tsc_period_ns = host->tsc_period * 1000000000;
-
-    #ifdef _WIN32
-    LARGE_INTEGER qpc_initial = {0};
-    LARGE_INTEGER qpc_final = {0};
-    LARGE_INTEGER qpc_delta = {0};
-    u64 qpc_delta_ns = 0;  // Unit: Nanoseconds.
-
-    HANDLE current_thread = GetCurrentThread();
-    HANDLE current_process = GetCurrentProcess();
-    #endif
+    // It would be nice to re-measure the overhead for every call of the target, just in case
+    // the overhead is changing (with CPU scaling, system load, etc.); however, if we do that,
+    // sometimes measuring the overhead gives an overly-high value (due to thread/process
+    // pre-empting or other OS scheduler shenanigans). So, for now, we only measure once.
+    // TODO When there is an Invariant TSC, we could be more aggressive in finding the _minimum_
+    //      overhead (storing it across profiler runs), because it sometimes varies by 1-2 ns.
+    u64 timer_overhead =
+        params.adjust_for_timer_overhead
+        ? get_timer_overhead(params.timing, 10)
+        : 0;
 
     for (i32 rep = 0; rep < params.repetitions; ++rep) {
         // Each repetition must use the same sample, so we re-seed here.
@@ -316,65 +473,39 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info co
                 // critical code begins.
                 sampler(result.input, n, &rand_state_local, scratch.a);
 
+                // Store information about the input, in order to verify correctness later.
                 u64 checksum_before = 0;
                 if (params.verify_correctness) {
                     checksum_before = verify_checksum(result.input, n);
                 }
 
                 // Measure the execution time of our target function.
+                u64 timer_initial = get_timer_value(params.timing);
+                target(result.input, n, &rand_state_local, scratch.a);
+                u64 timer_final = get_timer_value(params.timing);
+                u64 timer_delta = timer_final - timer_initial;
 
-                // TODO Measure (once, at the beginning of test run), and subtract, the mean time
-                //      to run the timing instructions themselves, i.e., the difference in the
-                //      counter between two successive runs.
-                switch(params.timing) {
-                case TIMING_RDTSC: {
-                    _mm_lfence();
-                    tsc_initial = __rdtsc();
-                    target(result.input, n, &rand_state_local, scratch.a);
-                    _mm_lfence();
-                    tsc_final = __rdtsc();
-                    tsc_delta = tsc_final - tsc_initial;
-                } break;
-                case TIMING_QPC: {
-                    #ifdef _WIN32
-                    QueryPerformanceCounter(&qpc_initial);
-                    target(result.input, n, &rand_state_local, scratch.a);
-                    QueryPerformanceCounter(&qpc_final);
-                    qpc_delta.QuadPart = qpc_final.QuadPart - qpc_initial.QuadPart;
-                    qpc_delta_ns = qpc_delta.QuadPart * 1000000000ll / host->qpc_frequency;
-                    #else
-                    assertm(false, "The requested timing method is unavailable on this platform.");
-                    #endif
-                } break;
-                case TIMING_QTCT: {
-                    #ifdef _WIN32
-                    // For now, we assume that QueryThreadCycleTime() internally uses RDTSC,
-                    // so we can treat it the same way. Note that this will NOT be true
-                    // on ARM platforms.
-                    QueryThreadCycleTime(current_thread, &tsc_initial);
-                    target(result.input, n, &rand_state_local, scratch.a);
-                    QueryThreadCycleTime(current_thread, &tsc_final);
-                    tsc_delta = tsc_final - tsc_initial;
-                    #else
-                    assertm(false, "The requested timing method is unavailable on this platform.");
-                    #endif
-                } break;
-                case TIMING_QPCT: {
-                    #ifdef _WIN32
-                    // We assume that QueryProcessCycleTime() internally uses RDTSC,
-                    // so we can treat it the same way.
-                    QueryProcessCycleTime(current_process, &tsc_initial);
-                    target(result.input, n, &rand_state_local, scratch.a);
-                    QueryProcessCycleTime(current_process, &tsc_final);
-                    tsc_delta = tsc_final - tsc_initial;
-                    #else
-                    assertm(false, "The requested timing method is unavailable on this platform.");
-                    #endif
-                } break;
-                default: {
-                    assertm(false, "The requested timing method is unimplemented.");
-                } break;
-                };
+                // Adjust for the time it takes to call the timing subroutines themselves.
+                if (params.adjust_for_timer_overhead) {
+                    if (timer_overhead < timer_delta) {
+                        timer_delta -= timer_overhead;
+                    } else {
+                        timer_delta = 0;
+                    }
+                }
+
+                // Convert to wall time. Re-query the timer frequency *every time*, just in case
+                // it's changing (e.g., non-invariant TSC).
+                u64 timer_frequency = get_timer_frequency(params.timing, host);
+                f64 timer_delta_ns = 1e9 * (f64)timer_delta / (f64)timer_frequency;
+
+                // Save to result data.
+                if (rep == 0) {
+                    result.units[n_idx * sample_size + i].time = timer_delta_ns;
+                } else {
+                    f64 best_so_far = result.units[n_idx * sample_size + i].time;
+                    result.units[n_idx * sample_size + i].time = MIN(timer_delta_ns, best_so_far);
+                }
 
                 // Verify correctness of output.
                 // TODO Have an option to do "simple" or "full" correctness, where the full
@@ -391,41 +522,6 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info co
                     }
                 }
                 scratch_release(scratch);
-
-                // Write time deltas to profiler data, converting to wall time if needed.
-
-                switch(params.timing) {
-                case TIMING_RDTSC:
-                case TIMING_QTCT:
-                case TIMING_QPCT: {
-                    // Calculate timings in nanoseconds.
-                    f64 tsc_delta_ns = (f64)(tsc_delta * tsc_period_ns);
-                    if (rep == 0) {
-                        result.units[n_idx * sample_size + i].time = tsc_delta_ns;
-                    } else {
-                        f64 best_so_far = result.units[n_idx * sample_size + i].time;
-                        result.units[n_idx * sample_size + i].time = MIN(tsc_delta_ns, best_so_far);
-                    }
-                } break;
-                case TIMING_QPC: {
-                    #ifdef _WIN32
-                    if (rep == 0) {
-                        result.units[n_idx * sample_size + i].time =
-                            (f64)qpc_delta_ns;
-                    } else {
-                        f64 best_so_far = result.units[n_idx * sample_size + i].time;
-                        result.units[n_idx * sample_size + i].time =
-                            MIN((f64)qpc_delta_ns, best_so_far);
-                    }
-                    #else
-                    assertm(false, "The requested timing method is unavailable on this platform.");
-                    result.units[n_idx * sample_size + i].time = 0.0f;
-                    #endif
-                } break;
-                default: {
-                    assertm(false, "The requested timing method is unimplemented.");
-                } break;
-                };
             }
             ++n_idx;
         }

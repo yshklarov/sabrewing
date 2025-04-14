@@ -6,18 +6,6 @@
 #define LOGGER_MEMORY 8*1024*1024
 #define LOGGER_MAX_ENTRYSIZE 8192
 
-typedef struct
-{
-    u16 year; // e.g., 2025
-    u8 month; // 1 through 12
-    u8 day; // 1 through 31
-    u8 weekday; // 0 is Sunday; 6 is Saturday
-    u8 hour; // 0 through 23
-    u8 minute; // 0 through 59
-    u8 second; // 0 through 59
-    u16 millisecond; // 0 through 999
-} timedate;
-
 typedef enum
 {
     LOG_LEVEL_DEBUG,
@@ -63,55 +51,6 @@ typedef struct
     arena store_strs;
     logger_entry* entries;  // Contiguous array.
 } logger;
-
-timedate get_timedate()
-{
-    timedate now;
-  #ifdef _WIN32
-    SYSTEMTIME now_win32;
-    GetLocalTime(&now_win32);
-    now.year = (u16)now_win32.wYear;
-    now.month = (u8)now_win32.wMonth;
-    now.day = (u8)now_win32.wDay;
-    now.weekday = (u8)now_win32.wDayOfWeek;
-    now.hour = (u8)now_win32.wHour;
-    now.minute = (u8)now_win32.wMinute;
-    now.second = (u8)now_win32.wSecond;
-    now.millisecond = (u16)now_win32.wMilliseconds;
-  #else
-    // WARNING: Not thread-safe.
-    struct timespec now_linux = {0};
-    struct tm tm_now = {0};
-    // Possible race conditon: Changed timezone/etc. Unfortunately, there doesn't seem to be a
-    // simple atomic way to get the time together with milliseconds.
-    clock_gettime(CLOCK_REALTIME, &now_linux);
-    struct tm* tm_now_tmp = localtime(&now_linux.tv_sec);
-    tm_now = *tm_now_tmp;  // Avoid race condition: other threads might call localtime().
-    now.year = (u16)(tm_now.tm_year + 1900);
-    now.month = (u8)(tm_now.tm_mon + 1);
-    now.day = (u8)tm_now.tm_mday;
-    now.weekday = (u8)tm_now.tm_wday;
-    now.hour = (u8)tm_now.tm_hour;
-    now.minute = (u8)tm_now.tm_min;
-    now.second = (u8)tm_now.tm_sec;
-    now.millisecond = (u16)(now_linux.tv_nsec / 1000000);
-  #endif
-    return now;
-}
-
-// Format the time and date as a null-terminated string in human-readable form.
-// E.g., [2000-01-01 08:12:34] (needs buf_len >= 21+1 = 22; otherwise, will truncate).
-//
-// Return the number of characters printed, not including the null terminator.
-//
-u32 print_timedate(u8* buf, u32 buf_len, timedate td)
-{
-    #define TIMEDATE_FMT_LEN 22
-    char const* format_str = "[%04u-%02u-%02u %02u:%02u:%02u]";
-    return (u32)snprintf((char*)buf, buf_len,
-             format_str,
-             td.year, td.month, td.day, td.hour, td.minute, td.second);
-}
 
 void logger_destroy(logger* l);
 logger logger_create()
@@ -161,10 +100,10 @@ u8 const* logger_get_message_with_timestamp(logger l, u32 index)
     if (index >= l.len) {
         return NULL;
     }
-    #define MESSAGE_MAX_LEN (TIMEDATE_FMT_LEN + LOGGER_MAX_ENTRYSIZE + 1)
+    #define MESSAGE_MAX_LEN (TIMEDATE_FMT_LEN + 2 + LOGGER_MAX_ENTRYSIZE + 1)
     static u8 message[MESSAGE_MAX_LEN] = {0};
     memset(message, 0, sizeof(message));
-    u32 offset = print_timedate(message, MESSAGE_MAX_LEN, l.entries[index].timestamp);
+    u32 offset = print_timedate(message, MESSAGE_MAX_LEN, l.entries[index].timestamp, true);
     message[offset++] = ' ';
     memcpy(message + offset,
            l.entries[index].content->data,

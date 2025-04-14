@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 //#include <tgmath.h>
 
@@ -87,6 +88,29 @@ typedef size_t    usize;
 typedef struct { T lower; T upper; T stride; } range_##T;
 FOR_INTEGER_TYPES
 #undef X
+
+typedef struct
+{
+    u16 year; // e.g., 2025
+    u8 month; // 1 through 12
+    u8 day; // 1 through 31
+    u8 weekday; // 0 is Sunday; 6 is Saturday
+    u8 hour; // 0 through 23
+    u8 minute; // 0 through 59
+    u8 second; // 0 through 59
+    u16 millisecond; // 0 through 999
+} timedate;
+
+
+/**************** Forward declarations ****************/
+
+u64 get_ostime_count();
+u64 get_ostime_freq();
+u64 get_ostime_ms();
+u64 get_ostime_us();
+u64 get_ostime_100ns();
+timedate get_timedate();
+
 
 /**************** Utility macros & functions ****************/
 
@@ -240,16 +264,7 @@ void rand_init_from_seed(rand_state* x, u64 seed)
 // very fine on most platforms (less than 1 microsecond).
 u64 rand_get_seed_from_time()
 {
-  #ifdef _WIN32
-    LARGE_INTEGER counter = {0};
-    QueryPerformanceCounter(&counter);
-    u64 seed = (u64)counter.QuadPart;
-  #else
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    u64 seed = (u64)tv.tv_usec;
-  #endif
-    return seed;
+    return get_ostime_100ns();
 }
 
 void rand_init_from_time(rand_state* x)
@@ -284,7 +299,8 @@ u32 rand_bool(rand_state* x)
 }
 
 // Return `true` with probability p.
-bool rand_bernoulli(rand_state* x, f32 p) {
+bool rand_bernoulli(rand_state* x, f32 p)
+{
     if (p == 0.0f) return false;
     if (p == 1.0f) return true;
     return ((f32)rand_u64(x) / (f32)U64_MAX) < p;
@@ -333,7 +349,8 @@ bool file_exists(char const * filename)
 
 /**************** Time ****************/
 
-void sleep_ms(u32 milliseconds) {
+void sleep_ms(u32 milliseconds)
+{
   #ifdef _WIN32
     Sleep(milliseconds);
   #else
@@ -345,25 +362,112 @@ void sleep_ms(u32 milliseconds) {
   #endif
 }
 
-// Similar to get_time_ms(), but in units of 100 ns.
-u64 get_time_100ns() {
-  #ifdef _WIN32
-    SYSTEMTIME now_win32_st;
-    FILETIME now_win32_ft;
-    GetSystemTime(&now_win32_st);
-    SystemTimeToFileTime(&now_win32_st, &now_win32_ft);
-    return (u64)now_win32_ft.dwLowDateTime + ((u64)now_win32_ft.dwHighDateTime << 32);
-  #else
-    struct timespec now_linux = {0};
-    clock_gettime(CLOCK_MONOTONIC, &now_linux);
-    return ((u64)now_linux.tv_sec * 10000000) + (u64)(now_linux.tv_nsec / 100);
-  #endif
+#ifdef _WIN32
+u64 get_ostime_count()
+{
+    LARGE_INTEGER qpc_now;
+    QueryPerformanceCounter(&qpc_now);
+    return qpc_now.QuadPart;
 }
 
-// Obtain a monotonically-increasing timestamp, in milliseconds. This is for measurements only --
-// do not use the return value for human-type timestamps.
-u64 get_time_ms() {
-    return get_time_100ns() / 10000000;
+u64 get_ostime_freq()
+{
+    // The QPC frequency is guaranteed to never change while the system is running.
+    static LARGE_INTEGER qpc_frequency = {0};
+    if (!qpc_frequency.QuadPart) {
+        QueryPerformanceFrequency(&qpc_frequency);
+    }
+    return qpc_frequency.QuadPart;
+}
+
+#else
+u64 get_ostime_count()
+{
+    struct timespec now_linux = {0};
+    clock_gettime(CLOCK_MONOTONIC_RAW, &now_linux);
+    return ((u64)now_linux.tv_sec * 1000000000) + (u64)now_linux.tv_nsec;
+}
+
+u64 get_ostime_freq()
+{
+    return 1000000000;
+}
+#endif
+
+// Obtain a monotonically-increasing timestamp, in milliseconds. This is for measurements only -- do
+// not use the return value for human-readable timestamps.
+u64 get_ostime_ms()
+{
+    return (u64)(1000ll * get_ostime_count() / get_ostime_freq());
+}
+
+// Microseconds.
+u64 get_ostime_us()
+{
+    return (u64)(1000000ll * get_ostime_count() / get_ostime_freq());
+}
+
+// 100-nanoseconds units.
+// Note: It's tricky to define a reliable, cross-platform, monotonic get_ostime_ns() (with
+// 1-nanosecond units) because of integer overflow. It can probably be done, but it will need some
+// extra care.
+u64 get_ostime_100ns()
+{
+    return (u64)(10000000ll * get_ostime_count() / get_ostime_freq());
+}
+
+// Get the time and date in the local timzone.
+timedate get_timedate()
+{
+    timedate now;
+  #ifdef _WIN32
+    SYSTEMTIME now_win32;
+    GetLocalTime(&now_win32);
+    now.year = (u16)now_win32.wYear;
+    now.month = (u8)now_win32.wMonth;
+    now.day = (u8)now_win32.wDay;
+    now.weekday = (u8)now_win32.wDayOfWeek;
+    now.hour = (u8)now_win32.wHour;
+    now.minute = (u8)now_win32.wMinute;
+    now.second = (u8)now_win32.wSecond;
+    now.millisecond = (u16)now_win32.wMilliseconds;
+  #else
+    // WARNING: Not thread-safe.
+    struct timespec now_linux = {0};
+    struct tm tm_now = {0};
+    // Possible race conditon: Changed timezone/etc. Unfortunately, there doesn't seem to be a
+    // simple atomic way to get the time together with milliseconds.
+    clock_gettime(CLOCK_REALTIME, &now_linux);
+    struct tm* tm_now_tmp = localtime(&now_linux.tv_sec);
+    tm_now = *tm_now_tmp;  // Avoid race condition: other threads might call localtime().
+    now.year = (u16)(tm_now.tm_year + 1900);
+    now.month = (u8)(tm_now.tm_mon + 1);
+    now.day = (u8)tm_now.tm_mday;
+    now.weekday = (u8)tm_now.tm_wday;
+    now.hour = (u8)tm_now.tm_hour;
+    now.minute = (u8)tm_now.tm_min;
+    now.second = (u8)tm_now.tm_sec;
+    now.millisecond = (u16)(now_linux.tv_nsec / 1000000);
+  #endif
+    return now;
+}
+
+// Format the time and date as a null-terminated string in human-readable form.
+// E.g., [2000-01-01 08:12:34] (needs buf_len >= 19+2+1 = 22; otherwise, will truncate).
+// The square brackets will be present if `bracketed` is true.
+// The length `buf_len` should include the position for the null terminator.
+//
+// Return the number of characters printed, *not* including the null terminator.
+//
+#define TIMEDATE_FMT_LEN 19
+u32 print_timedate(u8* buf, u32 buf_len, timedate td, bool bracketed)
+{
+    char const* format_str = bracketed
+        ? "[%04u-%02u-%02u %02u:%02u:%02u]"
+        :  "%04u-%02u-%02u %02u:%02u:%02u";
+    return (u32)snprintf((char*)buf, buf_len,
+             format_str,
+             td.year, td.month, td.day, td.hour, td.minute, td.second);
 }
 
 
