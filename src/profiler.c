@@ -1,22 +1,3 @@
-// TODO Add option to "warm up" the CPU to bring it up to its base (or boost?) clock rate
-//      before starting the main workload.
-// TODO query_host_info() should get the realtime clock rate (like in CPU-Z).
-// TODO Add: RDTSCP
-// TODO Add: timing method(s) for Linux: clock_gettime with CLOCK_MONTONIC_RAW.
-// TODO Add: HPET and/or ACPI PM timers
-// TODO Add: RDPMC (may require some sort of privilege escalation)
-// TODO Add: RDPRU for certain AMD Zen CPUs, because RDTSC/RDTSCP is too coarse-grained on those.
-// TODO Look into Intel PCM (Performance Counter Montitor) for detailed diagnostics, such as:
-//      L2/L3 cache hits/misses, branches, core frequency, instructions retired, memory bytes
-//      read/written, etc.
-// TODO Look into Windows PMU (for branch mispredictions, cache misses, etc.): See
-//      https://learn.microsoft.com/en-us/windows-hardware/test/wpt/recording-pmu-events
-// TODO Add: ARM GIT (Generic Interval Timer)
-// TODO Add: ARM Performance Monitors Cycle Counter
-// TODO Find a way to detect process pre-empting, so we can restart the test, so we can
-//      save time.
-
-
 /**** Types ****/
 
 typedef enum
@@ -56,6 +37,7 @@ typedef enum
 typedef struct
 {
     bool initialized;
+
     //operating_system os;
     char cpu_name[48];
     u32 cpu_num_cores;
@@ -66,13 +48,16 @@ typedef struct
     u64 tsc_frequency;
     bool has_tsc;
     bool has_invariant_tsc;
+
+    // For measure_tsc_frequency().
+    u64 _wall_time_initial;
+    u64 _tsc_initial;
 } host_info;
 
 typedef struct
 {
     // Sampler parameters
-    // These are i32 out of necessity for the time being (ImGui standard widgets require it).
-    // TODO Switch to range_u32 after writing custom ImGui range widget.
+    // NOTE These are i32 out of necessity for the time being (ImGui standard widgets require it).
     range_i32 ns;
     i32 sample_size;
     u64 seed;
@@ -83,8 +68,6 @@ typedef struct
     i32 target_idx;
     timing_method_id timing;
     bool adjust_for_timer_overhead;
-    // TODO Implement a smarter repeat method: Adaptive: Repeat until the three best results are
-    //      within <xx>% of one another, then take the mean of these three.
     //repeat_method repeat;
     i32 repetitions;
     bool verify_correctness;
@@ -116,8 +99,8 @@ typedef struct
     rand_state seed;  // (sizeof u64)*4 = 32 bytes
     f64 n;
     f64 time;  // nanoseconds
-    // TODO Add metadata:
-    //   - RNG state used (se we can re-create the input)
+    // Tracking this so the input may be re-created at user's request.
+    rand_state rand_state;
 } profiler_result_unit;
 
 // Summary statistics for a batch of test units.
@@ -133,11 +116,11 @@ typedef struct
 
 typedef struct
 {
-    // TODO Add metadata:
-    //   - Wall time began (call get_timedate() from util.c)
-    //   - Wall time completed
-    //   - Total wall time elapsed (yes, store separately, because of possible time changes)
+    bool plot_visible;
+} profiler_result_gui_state;
 
+typedef struct
+{
     arena local_arena;  // Memory container; lifetime is until this result is freed.
     u64 id;  // id==0 indicates that this is a stub (uninitialized, or already destroyed).
 
@@ -149,9 +132,9 @@ typedef struct
     profiler_result_unit* units;
     profiler_result_group* groups;
 
-    u64 verification_failure_count;
+    u64 verification_reject_count;
 
-    bool plot_visible;  // TODO Move this out of here, into a GUI state struct.
+    profiler_result_gui_state gui;
 } profiler_result;
 typedef_darray(profiler_result);
 
@@ -207,49 +190,43 @@ void result_destroy(profiler_result* result)
     *result = empty_result;
 }
 
-
-// Estimate the frequency of the TSC, in Hz.
+// This function must be called twice (with some time separation) before it will actually set the
+// TSC frequency to a nonzero value.
 //
-// This is done by measurement, by calling out to another (monotonic, high-resolution) OS-provided
-// wall timer. Note that it's not possible to do this in any other way (except by manually building
-// a comprehensive database of CPU models) because the majority of x86 CPUs do not have instructions
-// to provide this data.
+// If host->invariant_tsc == true, it will provide more accurate successive estimates each time. If
+// invariant_tsc == false, it will only use the last two times it was called as an interval for
+// measurement.
 //
-// The first time this function is called, it will return 0.
-// If invariant_tsc == true, it will return more accurate successive estimates each time it's called.
-// If invariant_tsc == false, it will only use the last two times it was called as an interval
-// for measurement; the result will be more accurate, but less precise.
-//
-// Note: It would also possible to fetch the TSC frequency from the Linux kernel.
-//
-u64 measure_tsc_frequency(bool invariant_tsc)
+void update_tsc_frequency(host_info* host, bool first_call)
 {
-    // TODO Eliminate these global variables -- they should be passed in as part of a host_info.
-    static bool already_called = false;
-    static u64 tsc_initial = 0;
-    static u64 wall_time_initial = 0;
-    if (!already_called) {
-        wall_time_initial = get_ostime_100ns();
+    // Measure the TSC frequency by calling out to another (monotonic, high-resolution) OS-provided
+    // wall timer. Note that it's not possible to do this in any other way (except by manually
+    // building a comprehensive database of CPU models) because the majority of x86 CPUs do not have
+    // instructions to provide this data.
+    //
+    // Note: It would also possible to fetch the TSC frequency from the Linux kernel, but we
+    // don't need so much precision because we're free to measure over a longer time interval.
+
+    if (first_call) {
+        host->_wall_time_initial = get_ostime_100ns(!host->has_invariant_tsc);
         _mm_lfence();
-        tsc_initial = __rdtsc();
-        already_called = true;
-        return 0;
+        host->_tsc_initial = __rdtsc();
+        return;
     }
 
+    u64 wall_time_now = get_ostime_100ns(!host->has_invariant_tsc);
     _mm_lfence();
     u64 tsc_now = __rdtsc();
-    u64 tsc_elapsed = tsc_now - tsc_initial;
 
-    u64 wall_time_now = get_ostime_100ns();
-    u64 wall_time_elapsed = wall_time_now - wall_time_initial;
+    u64 wall_time_elapsed = wall_time_now - host->_wall_time_initial;
+    u64 tsc_elapsed = tsc_now - host->_tsc_initial;
+    host->tsc_frequency = 10000000u * tsc_elapsed / MAX(1ll, wall_time_elapsed);
 
-    if (!invariant_tsc) {
-        // We need to keep re-measuring, because the frequency changes.
-        tsc_initial = tsc_now;
-        wall_time_initial = wall_time_now;
+    if (!host->has_invariant_tsc) {
+        // Discard previous data, because the frequency may be changing.
+        host->_tsc_initial = tsc_now;
+        host->_wall_time_initial = wall_time_now;
     }
-
-    return 10000000u * tsc_elapsed / MAX(1ll, wall_time_elapsed);
 }
 
 #ifdef _WIN32
@@ -265,13 +242,24 @@ u64 get_qpc_frequency()
 #endif
 
 // Return the value of the given timer.
+/* We prevent inlining because the compiler might inline some calls and not others, which would
+   interfere with timings (e.g., adjust_for_timer_overhead would be spoiled). */
+NEVER_INLINE
 u64 get_timer_value(timing_method_id tmid)
 {
     // This is branchy, but not overly so. If the user cares about the extra dozen instructions due
     // to calling this function (as opposed to calling, say, __rdtsc() directly), they can adjust by
     // subtracting get_timer_overhead().
+
+    // Another way to do this more efficiently would be to re-structure: Move the switch statment to
+    // the target call, instead calling the target inside each case. The rdtsc could be done with
+    // inline asm. But this is all very much overkill for our application, at least for the time
+    // being.
+
     switch(tmid) {
     case TIMING_RDTSC: {
+        // The fence is probably unnecessary because we're inside our own stack frame, but we insert
+        // in anyway for good measure.
         _mm_lfence();
         return __rdtsc();
     } break;
@@ -319,11 +307,11 @@ u64 get_timer_frequency(timing_method_id tmid, host_info* host)
 {
     switch(tmid) {
     case TIMING_RDTSC: {
-        return measure_tsc_frequency(host->has_invariant_tsc);
+        return host->tsc_frequency;
     } break;
     case TIMING_QPC: {
         #ifdef _WIN32
-        return get_qpc_frequency();
+        return host->qpc_frequency;
         #else
         assertm(false, "The requested timing method is unimplemented.");
         return 0;
@@ -333,7 +321,7 @@ u64 get_timer_frequency(timing_method_id tmid, host_info* host)
     case TIMING_QPCT: {
         #ifdef _WIN32
         // MSDN doesn't recommend this. But we have to do it somehow, and this seems to work.
-        return measure_tsc_frequency(host->has_invariant_tsc);
+        return host->tsc_frequency;
         #else
         assertm(false, "The requested timing method is unimplemented.");
         return 0;
@@ -348,6 +336,8 @@ u64 get_timer_frequency(timing_method_id tmid, host_info* host)
 
 // Get the overhead resulting from using the timer: time between successive calls.
 // This function tests a large number of repetitions to get a good measurement.
+// Warning: The CPU should be "warmed up" when calling this, to get up to its full (or boost)
+// frequency; otherwise, the return value may be an overestimate of the true overhead.
 u64 get_timer_overhead(timing_method_id tmid, u32 timeout_milliseconds)
 {
     // Our process might be pre-empted, so we need to do this many times to be very sure that we
@@ -363,34 +353,13 @@ u64 get_timer_overhead(timing_method_id tmid, u32 timeout_milliseconds)
     u64 timeout_us = timeout_milliseconds * 1000;
     u64 start_time = get_ostime_us();
 
-    // "Good values" are those that are very close to the minimum value found so far.
     u64 min_overhead = U64_MAX;
-    u32 good_values_found = 0;
-    u32 good_values_needed = 30;
-    bool done = false;
-    while (!done) {
-        for (u32 i = 0; i < 5; ++i) {
-            u64 one = get_timer_value(tmid);
-            u64 two = get_timer_value(tmid);
-            u64 overhead = two - one;
-            if (overhead < min_overhead) {
-                min_overhead = overhead;
-                good_values_found = 1;
-            } else {
-                if ((overhead == min_overhead) ||
-                    (min_overhead / (overhead - min_overhead) > 30)) {
-                    ++good_values_found;
-                    if (good_values_found == good_values_needed) {
-                        done = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if (get_ostime_us() - start_time >= timeout_us) {
-            break;
-        }
-    }
+    do {
+        u64 one = get_timer_value(tmid);
+        u64 two = get_timer_value(tmid);
+        u64 overhead = two - one;
+        min_overhead = MIN(overhead, min_overhead);
+    } while (get_ostime_us() - start_time < timeout_us);
     return min_overhead;
 }
 
@@ -416,12 +385,12 @@ void query_host_info(host_info* host)
         #else
         host->qpc_frequency = 0;
         #endif
-        host-> initialized = true;
     }
 
     // Measure continually, because (on some systems) it may change, and in any case
     // we can get a more precise estimate by measuring over longer time periods.
-    host->tsc_frequency = measure_tsc_frequency(host->has_invariant_tsc);
+    update_tsc_frequency(host, !host->initialized);
+    host->initialized = true;
 }
 
 
@@ -436,37 +405,28 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info* h
         return result;
     }
 
-    // TODO Run profiler in separate function and separate thread; setting GUI to low priority
-    //      (or to low FPS cap). Or even in a separate process!
-
     u64 sample_size = params.sample_size;  // For brevity.
     fn_sampler_sort sampler = samplers[params.sampler_idx].fn;
     fn_target_sort target = targets[params.target_idx].fn;
 
     // It would be nice to re-measure the overhead for every call of the target, just in case
     // the overhead is changing (with CPU scaling, system load, etc.); however, if we do that,
-    // sometimes measuring the overhead gives an overly-high value (due to thread/process
+    // sometimes measuring the overhead gives too high a value (due to thread/process
     // pre-empting or other OS scheduler shenanigans). So, for now, we only measure once.
-    // TODO When there is an Invariant TSC, we could be more aggressive in finding the _minimum_
-    //      overhead (storing it across profiler runs), because it sometimes varies by 1-2 ns.
     u64 timer_overhead =
         params.adjust_for_timer_overhead
-        ? get_timer_overhead(params.timing, 10)
+        ? get_timer_overhead(params.timing, 20)
         : 0;
 
     for (i32 rep = 0; rep < params.repetitions; ++rep) {
         // Each repetition must use the same sample, so we re-seed here.
         rand_state rand_state_local;
         rand_init_from_seed(&rand_state_local, params.seed);
-
-        u64 n_idx = 0;
-        // TODO Prettier range loop.
-        for (i32 n = params.ns.lower;
-             n <= params.ns.upper;
-             n += params.ns.stride) {
+        loop_over_range_i32(params.ns, n, n_idx) {
             for (u64 i = 0; i < (u64)sample_size; ++i) {
                 arena_tmp scratch = scratch_get(NULL, 0);
                 result.units[n_idx * sample_size + i].n = (f64)n;
+                result.units[n_idx * sample_size + i].rand_state = rand_state_local;
 
                 // Generate input data for this test unit. We do this inside the loop, just before
                 // measuring, to encourage the input data to already be in CPU cache when the
@@ -508,69 +468,61 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info* h
                 }
 
                 // Verify correctness of output.
-                // TODO Have an option to do "simple" or "full" correctness, where the full
-                //      check will use a known-reliable sort and compare to the output.
                 if (rep == 0 && params.verify_correctness) {
-                    // TODO Also mark these units "verification_failed = true", and color them red.
                     if (!verify_ordered(result.input, n)) {
-                        ++result.verification_failure_count;
+                        ++result.verification_reject_count;
                     } else {
                         u64 checksum_after = verify_checksum(result.input, n);
                         if (checksum_before != checksum_after) {
-                            ++result.verification_failure_count;
+                            ++result.verification_reject_count;
                         }
                     }
                 }
                 scratch_release(scratch);
             }
-            ++n_idx;
         }
     } // for (rep ...)
 
     if (params.verify_correctness) {
-        if (result.verification_failure_count == 0) {
+        if (result.verification_reject_count == 0) {
             logger_appendf(l, LOG_LEVEL_INFO,
-                           "Verification success: Output correct for all %llu units.",
-                           result.len_units);
+                   "Verification success: Verifier accepted %llu/%llu units.",
+                   result.len_units - result.verification_reject_count, result.len_units);
         } else {
             logger_appendf(l, LOG_LEVEL_INFO,
-                           "Verification failure: Incorrect output for %llu/%llu units.",
-                           result.verification_failure_count, result.len_units);
+                   "Verification failure: Verifier accepted %llu/%llu units.",
+                   result.len_units - result.verification_reject_count, result.len_units);
         }
     }
 
 
     // Gather result for plotting.
-    arena_tmp scratch = scratch_get(0, 0);
-    f64* times = arena_push_array_zero(scratch.a, f64, sample_size);
-    // TODO Prettier range loop.
-    u64 n_idx = 0;
-    for (u64 n = params.ns.lower;
-         n <= (u64)params.ns.upper;
-         n += params.ns.stride) {
-        result.groups[n_idx].n = (f64)n;
-        result.groups[n_idx].time_mean = 0;
-        // TODO Don't copy and sort; instead, implement quickselect to find quantiles and median.
-        for (u64 i = 0; i < (u64)sample_size; ++i) {
-            times[i] = result.units[n_idx * sample_size + i].time;
-            result.groups[n_idx].time_mean += times[i];
+    {
+        arena_tmp scratch = scratch_get(0, 0);
+        f64* times = arena_push_array_zero(scratch.a, f64, sample_size);
+        loop_over_range_i32(params.ns, n, n_idx) {
+            result.groups[n_idx].n = (f64)n;
+            result.groups[n_idx].time_mean = 0;
+            for (u64 i = 0; i < (u64)sample_size; ++i) {
+                times[i] = result.units[n_idx * sample_size + i].time;
+                result.groups[n_idx].time_mean += times[i];
+            }
+            result.groups[n_idx].time_mean /= sample_size;
+            util_sort(times, (u32)sample_size);
+            result.groups[n_idx].time_min = times[0];
+            result.groups[n_idx].time_max = times[sample_size - 1];
+            if (sample_size & 1) {
+                result.groups[n_idx].time_median = times[(sample_size - 1)/2];
+            } else {
+                result.groups[n_idx].time_median =
+                    (times[(sample_size - 1)/2] +
+                     times[(sample_size - 1)/2 + 1]) / 2;
+            }
         }
-        result.groups[n_idx].time_mean /= sample_size;
-        util_sort(times, (u32)sample_size);
-        result.groups[n_idx].time_min = times[0];
-        result.groups[n_idx].time_max = times[sample_size - 1];
-        if (sample_size & 1) {
-            result.groups[n_idx].time_median = times[(sample_size - 1)/2];
-        } else {
-            result.groups[n_idx].time_median =
-                (times[(sample_size - 1)/2] +
-                 times[(sample_size - 1)/2 + 1]) / 2;
-        }
-        ++n_idx;
+        scratch_release(scratch);
     }
-    scratch_release(scratch);
 
-    result.plot_visible = true;
+    result.gui.plot_visible = true;
 
     logger_appendf(l, LOG_LEVEL_INFO, "Completed profiler run (ID %d).", result.id);
     return result;

@@ -1,6 +1,6 @@
 #ifndef _WIN32
-// We need _POSIX_C_SOURCE 199309L so that certain time functions are defined.
-#define _POSIX_C_SOURCE 199309L
+  // We need _POSIX_C_SOURCE 199309L so that certain time functions are defined.
+  #define _POSIX_C_SOURCE 199309L
 #endif
 
 #include <assert.h>
@@ -12,26 +12,22 @@
 //#include <tgmath.h>
 
 #ifdef _WIN32
-
-#define WIN32_LEAN_AND_MEAN    // Exclude rarely-used definitions.
-#include <windows.h>
-#include <io.h>
-#include <memoryapi.h>
-#include <synchapi.h>
-#define F_OK 0
-#define access _access
-#include <intrin.h>
-
+  #define WIN32_LEAN_AND_MEAN    // Exclude rarely-used definitions.
+  #include <windows.h>
+  #include <io.h>
+  #include <memoryapi.h>
+  #include <synchapi.h>
+  #define F_OK 0
+  #define access _access
+  #include <intrin.h>
 #else
-
-#include <errno.h>
-#include <sys/mman.h>
-#include <sys/time.h>
-#include <time.h>
-#include <unistd.h>
-#include <emmintrin.h>
-#include <x86intrin.h>
-
+  #include <errno.h>
+  #include <sys/mman.h>
+  #include <sys/time.h>
+  #include <time.h>
+  #include <unistd.h>
+  #include <emmintrin.h>
+  #include <x86intrin.h>
 #endif
 
 
@@ -72,16 +68,16 @@ typedef size_t    usize;
     X(u64) \
 
 #ifndef I32_MAX
-#define I32_MAX 0x7FFFFFFF
+  #define I32_MAX 0x7FFFFFFF
 #endif
 #ifndef U32_MAX
-#define U32_MAX 0xFFFFFFFFu
+  #define U32_MAX 0xFFFFFFFFu
 #endif
 #ifndef I64_MAX
-#define I64_MAX 0x7FFFFFFFFFFFFFFF
+  #define I64_MAX 0x7FFFFFFFFFFFFFFF
 #endif
 #ifndef U64_MAX
-#define U64_MAX 0xFFFFFFFFFFFFFFFFu
+  #define U64_MAX 0xFFFFFFFFFFFFFFFFu
 #endif
 
 #define X(T) \
@@ -108,7 +104,7 @@ u64 get_ostime_count();
 u64 get_ostime_freq();
 u64 get_ostime_ms();
 u64 get_ostime_us();
-u64 get_ostime_100ns();
+u64 get_ostime_100ns(bool pause_for_rollover);
 timedate get_timedate();
 
 
@@ -116,7 +112,15 @@ timedate get_timedate();
 
 // TODO I'm not sure that I like asserts -- probably better to crash (abort() or exit()).
 #ifndef assertm
-#define assertm(exp, msg) assert(((void)(msg), (exp)))
+  #define assertm(exp, msg) assert(((void)(msg), (exp)))
+#endif
+
+#if defined(_MSC_VER)
+  #define NEVER_INLINE __declspec(noinline)  // MSVC
+#elif defined(__GNUC__) || defined(__clang__)
+  #define NEVER_INLINE __attribute__((noinline))  // GCC/Clang
+#else
+  #define NEVER_INLINE  // Fallback for unknown compilers
 #endif
 
 // Size of a static array.
@@ -126,10 +130,10 @@ timedate get_timedate();
 #define SWAP_f64(a,b) f64 _SWAP_TMP = (a); (a) = (b); (b) = _SWAP_TMP
 
 #ifndef MIN
-#define MIN(a,b) (((a) < (b)) ? (a) : (b))
+  #define MIN(a,b) (((a) < (b)) ? (a) : (b))
 #endif
 #ifndef MAX
-#define MAX(a,b) (((a) < (b)) ? (b) : (a))
+  #define MAX(a,b) (((a) < (b)) ? (b) : (a))
 #endif
 
 #define CLAMP(x, lower, upper) (((x) < (lower)) ? (lower) : (((x) > (upper)) ? (upper) : (x)))
@@ -142,28 +146,27 @@ u32 clamp_i64_u32(i64 x) { return (u32)MAX(0, x); }
 i32 clamp_u64_i32(u64 x) { return (x > I32_MAX) ? I32_MAX : (i32)x; }
 
 #define X(T) \
-T range_##T##_count(range_##T r) { return (r.upper - r.lower) / r.stride + 1; }
+T range_##T##_count(range_##T r) { return (r.upper - r.lower) / r.stride + 1; } \
+void range_##T##_repair(range_##T * r)                                  \
+{                                                                       \
+    r->lower = MAX(0, r->lower);                                        \
+    r->upper = MAX(0, r->upper);                                        \
+    r->stride = MAX(1, r->stride);                                      \
+    if (r->lower > r->upper) {                                          \
+        r->upper = r->lower;                                            \
+    }                                                                   \
+}
 FOR_INTEGER_TYPES
 #undef X
 
-void range_i32_repair(range_i32* r)
-{
-    r->lower = MAX(0, r->lower);
-    r->upper = MAX(0, r->upper);
-    r->stride = MAX(1, r->stride);
-    if (r->lower > r->upper) {
-        r->upper = r->lower;
-    }
-}
-void range_u32_repair(range_u32* r)
-{
-    r->lower = MAX(0, r->lower);
-    r->upper = MAX(0, r->upper);
-    r->stride = MAX(1, r->stride);
-    if (r->lower > r->upper) {
-        r->upper = r->lower;
-    }
-}
+// Macro user must provide an extra enclosing block scope. Arguments must be individual keywords.
+#define loop_over_range_i32(_r, _n, _n_idx)     \
+    u64 _n_idx = 0;                             \
+    i32 _n;                                     \
+    u64 _n_count = (u64)range_i32_count(_r);    \
+    for (_n_idx = 0, _n = _r.lower;             \
+         _n_idx < _n_count;                     \
+         ++n_idx, n += _r.stride)
 
 // x must be unsigned; k must satisfy 0 <= k < 32
 #define ROT32(x,k) (((x)<<(k))|((x)>>(32-(k))))
@@ -218,7 +221,7 @@ void util_maxheap(f64* data, u32 n)
     }
 }
 
-// Heapsort. TODO Switch to introsort (copy from sort.c).
+// Heapsort.
 void util_sort(f64* data, u32 n)
 {
     if (n < 2) return;
@@ -264,7 +267,7 @@ void rand_init_from_seed(rand_state* x, u64 seed)
 // very fine on most platforms (less than 1 microsecond).
 u64 rand_get_seed_from_time()
 {
-    return get_ostime_100ns();
+    return get_ostime_100ns(false);
 }
 
 void rand_init_from_time(rand_state* x)
@@ -411,9 +414,14 @@ u64 get_ostime_us()
 // Note: It's tricky to define a reliable, cross-platform, monotonic get_ostime_ns() (with
 // 1-nanosecond units) because of integer overflow. It can probably be done, but it will need some
 // extra care.
-u64 get_ostime_100ns()
+u64 get_ostime_100ns(bool pause_for_rollover)
 {
-    return (u64)(10000000ll * get_ostime_count() / get_ostime_freq());
+    u64 count = get_ostime_count();
+    if (pause_for_rollover) {
+        u64 prev_count = count;
+        while (prev_count == (count = get_ostime_count()));
+    }
+    return (u64)(10000000ll * count / get_ostime_freq());
 }
 
 // Get the time and date in the local timzone.
@@ -504,21 +512,22 @@ arena arena_create(usize initial_size)
         assertm(false, "Cannot create an empty arena.");
         return a;
     }
-    #ifdef _WIN32
+    byte* data = NULL;
+  #ifdef _WIN32
    // TODO Make it growable: VirtualAlloc(... MEM_RESERVE ...)
-    a.data = (byte*) VirtualAlloc(
+    data = (byte*) VirtualAlloc(
             NULL,
             initial_size,
             MEM_RESERVE | MEM_COMMIT,
             PAGE_READWRITE
         );
-    bool success = a.data;
-    #else
+    bool success = data != NULL;
+  #else
     // On some systems, munmap() requires the length to be a multiple of the page size, so
     // we round it up to the nearest multiple.
     usize page_size = sysconf(_SC_PAGESIZE);
     initial_size = page_size * ((initial_size-1) / page_size + 1);
-    a.data = (byte*)mmap(
+    data = (byte*)mmap(
             NULL,
             initial_size,
             PROT_READ | PROT_WRITE,
@@ -526,14 +535,14 @@ arena arena_create(usize initial_size)
             -1,
             0
         );
-    bool success = a.data != MAP_FAILED;
-    #endif
+    bool success = data != MAP_FAILED;
+  #endif
     if (success) {
         a.len = initial_size;
         a.pos = 0;
+        a.data = data;
     } else {
-        a.data = 0;
-        assertm(false, "Failed to create arena.");
+        // Nothing to do (a is already a stub).
     }
     return a;
 }
@@ -547,11 +556,11 @@ bool arena_destroy(arena* a)
     if (!a->data) {
         return true;
     }
-    #ifdef _WIN32
+  #ifdef _WIN32
     bool success = VirtualFree(a->data, 0, MEM_RELEASE);
-    #else
+  #else
     bool success = 0 == munmap(a->data, a->len);
-    #endif
+  #endif
     if (success) {
         a->data = 0;
         a->len = 0;

@@ -256,12 +256,15 @@ void show_profiler_windows(
 
     static profiler_params next_run_params = profiler_params_default();
 
+    f32 icon_width = ImGui::GetFontSize() * 1.5f;
+
     ImGui::BeginChild("ProfilerParamsConfigurationChild",
                       ImVec2(0, -GetBigButtonHeightWithSpacing()));
     {
 
-    if (ImGui::CollapsingHeader("Sampler configuration", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::PushItemWidth(ImGui::GetFontSize() * 10);
+    if (ImGui::CollapsingHeader("Sampler##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text(ICON_FA_DICE); ImGui::SameLine(icon_width);
+        ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
         if (ImGui::BeginCombo("Sampler", samplers[next_run_params.sampler_idx].name, 0)) {
             for (int i = 0; i < ARRAY_SIZE(samplers); i++) {
                 bool is_selected = (next_run_params.sampler_idx == i);
@@ -276,10 +279,14 @@ void show_profiler_windows(
             ImGui::EndCombo();
         }
         ImGui::Text(samplers[next_run_params.sampler_idx].description);
+        ImGui::PopItemWidth();
         ImGui::Separator();
 
-        // TODO Implement our own copy ImGui::DragIntRange2, which supports u64 and a third "stride"
-        //      parameter in the middle, and does better bounds checking.
+        ImGui::PushItemWidth(ImGui::GetFontSize() * 12);
+
+        // TODO Implement our own custom ImGui::DragIntRange2, which supports u64 and a third
+        //      "stride" parameter in the middle, and does better bounds checking; then, change
+        //      profiler_params to use a range_u32 or range_u64. Do the same for sample_size.
         if (ImGui::DragIntRange2(
                     "Array size (n) range", &next_run_params.ns.lower, &next_run_params.ns.upper,
                     20, 0, I32_MAX, "Min: %d", "Max: %d")) {
@@ -312,6 +319,11 @@ void show_profiler_windows(
             next_run_params.seed = rand_get_seed_from_time();
         }
         ImGui::Separator();
+
+        ImGui::PopItemWidth();
+
+        ImGui::Text(ICON_FA_SEEDLING); ImGui::SameLine(icon_width);
+        ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
         ImGui::InputScalar(
                 "RNG seed", ImGuiDataType_U64, &next_run_params.seed, NULL, NULL, "%llu");
         ImGui::EndDisabled();
@@ -319,8 +331,10 @@ void show_profiler_windows(
         ImGui::PopItemWidth();
     }
 
-    if (ImGui::CollapsingHeader("Profiler target", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::PushItemWidth(ImGui::GetFontSize() * 10);
+    if (ImGui::CollapsingHeader("Target##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
+
+        ImGui::Text(ICON_FA_BULLSEYE); ImGui::SameLine(icon_width);
+        ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
         if (ImGui::BeginCombo("Target", targets[next_run_params.target_idx].name, 0)) {
             for (int i = 0; i < ARRAY_SIZE(targets); i++) {
                 bool is_selected = (next_run_params.target_idx == i);
@@ -338,8 +352,17 @@ void show_profiler_windows(
         ImGui::PopItemWidth();
     }
 
-    if (ImGui::CollapsingHeader("Profiler options", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Text(ICON_FA_ROTATE " "); ImGui::SameLine();
+    if (ImGui::CollapsingHeader("Verifier##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text(ICON_FA_LIST_CHECK); ImGui::SameLine(icon_width);
+        ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
+        ImGui::Checkbox("Verify correctness of target output", &next_run_params.verify_correctness);
+        ImGui::SameLine(); HelpMarker(
+                "Verification involves a simple checksum, and may (occasionally) give false "
+                "positives.");
+    }
+
+    if (ImGui::CollapsingHeader("Profiler options##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text(ICON_FA_ROTATE); ImGui::SameLine(icon_width);
         ImGui::PushItemWidth(ImGui::GetFontSize() * 3);
         ImGui::DragInt(
                 "Repetitions",
@@ -374,9 +397,9 @@ void show_profiler_windows(
                 "\n\n"
                 "On some newer AMD CPUs, RDPRU (not yet implemented) is more accurate than RDTSC."
                 "\n\n"
-                "Another decent choice (on Windows only) is QPC. Note that there's no benefit to "
-                "using QPC when RDTSC is available, because QPC uses the TSC internally, but has "
-                "a lower resolution."
+                "Another acceptable choice (on Windows) is QPC. Note that there's no benefit to "
+                "using QPC when RDTSC is available, because QPC uses the TSC internally but has "
+                "a lower resolution. So QPC should only be used on older systems that lack a TSC."
                 "\n\n"
                 "Both QTCT and QPCT also often use RDTSC internally, but when the thread (resp. "
                 "process) is pre-empted they compensate by subtracting. Note that QPCT gives the "
@@ -425,31 +448,31 @@ void show_profiler_windows(
             ImGui::TableSetColumnIndex(2);
             ImGui::Text("%.0f MHz", host->tsc_frequency * 1e-6f);
             ImGui::TableSetColumnIndex(3); HelpMarker(
-                "Time Stamp Counter (TSC) units are (approximately) CPU clock cycles, so on a"
-                "4.0 GHz CPU a TSC unit is around 1/4 ns. The TSC units may be slightly shorter "
-                "than core crystal clock cycles. On very old CPUs, TSC units correspond exactly to "
-                "CPU cycles, whereas modern CPUs have an \"Invariant TSC\" that runs at a constant "
-                "frequency, independent of dynamic frequency scaling."
+                "Time Stamp Counter (TSC) units correspond (roughly speaking) to CPU clock cycles. "
+                "On very old CPUs, TSC units correspond exactly "
+                "to CPU cycles, whereas modern CPUs have an \"Invariant TSC\" that runs at a "
+                "constant frequency independent of dynamic frequency scaling and shared across "
+                "all cores. This frequency coincides with the base clock frequency on most, but "
+                "not all, CPUs. "
                 "\n\n"
-                "This is a measured estimate (because most CPUs cannot report the TSC frequency).");
+                "This is a measured estimate (as most CPUs do not report the TSC frequency).");
 
             ImGui::EndTable();
         }
-
-        ImGui::Separator();
-
-        ImGui::Text(ICON_FA_LIST_CHECK " "); ImGui::SameLine();
-        ImGui::Checkbox("Verify correctness of target output", &next_run_params.verify_correctness);
-        ImGui::SameLine(); HelpMarker(
-                "Verification involves a simple checksum, and may (occasionally) give false "
-                "positives.");
     }
 
-    if (ImGui::CollapsingHeader("Processor information", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("Processor information##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (ImGui::BeginTable("CPUInfo", 2, ImGuiTableFlags_SizingFixedFit)) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0); ImGui::Text("Processor:");
             ImGui::TableSetColumnIndex(1); ImGui::Text("%s", host->cpu_name);
+            ImGui::SameLine(); HelpMarker(
+                    "More detailed information may be obtained through other utilities such as: "
+                    "\n\n"
+                    "Windows: CPU-Z; Sysinternals Coreinfo"
+                    "\n"
+                    "Linux: CPU-X"
+                );
 
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0); ImGui::Text("Cache sizes:");
@@ -497,7 +520,7 @@ void show_profiler_windows(
     if (go_requested) {
         profiler_result result = profiler_execute(l, next_run_params, host);
         if (!result.id){
-            logger_append(l, LOG_LEVEL_ERROR, "Failed to run profiler.");
+            logger_append(l, LOG_LEVEL_ERROR, "Profiler failed to run.");
         } else {
             *darray_profiler_result_push(a, results) = result;
             if (guiconf->auto_zoom) {
@@ -537,7 +560,7 @@ void show_profiler_windows(
             usize num_results_visible = 0;
             // Recomputing every frame. Eww!
             for (usize i = 0; i < results->len; ++i) {
-                if (results->data[i].plot_visible) {
+                if (results->data[i].gui.plot_visible) {
                     ++num_results_visible;
                 }
             }
@@ -548,7 +571,7 @@ void show_profiler_windows(
             if (ImGui::Button(ICON_FA_CHART_LINE "##AllResultsVisibility",
                               ImVec2(checkbox_size, checkbox_size))) {
                 for (usize i = 0; i < results->len; ++i) {
-                    results->data[i].plot_visible = !all_visible;
+                    results->data[i].gui.plot_visible = !all_visible;
                 }
             }
             ImGui::EndDisabled();
@@ -602,10 +625,10 @@ void show_profiler_windows(
                 char const* result_name = targets[result->params.target_idx].name;
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
-                ImGui::Checkbox("", &result->plot_visible);
+                ImGui::Checkbox("", &result->gui.plot_visible);
                 //ImGui::SameLine();
                 ImGui::TableSetColumnIndex(1);
-                if (result->verification_failure_count > 0) {
+                if (result->verification_reject_count > 0) {
                     ImU32 badness_color = (ImU32)(0x600000FF);
                     ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, badness_color);
                 }
@@ -619,7 +642,7 @@ void show_profiler_windows(
                         next_run_params = *p;
                     }
                     ImGui::SameLine();
-                    HelpMarker("Re-load these parameters for the next run.");
+                    HelpMarker("Re-load these parameters to use for the next run.");
                     ImGui::Text("Sampler: %s", samplers[p->sampler_idx].name);
                     ImGui::Text("Range: (%d, %d, %d)", p->ns.lower, p->ns.stride, p->ns.upper);
                     ImGui::Text("Sample size: %d", p->sample_size);
@@ -638,9 +661,9 @@ void show_profiler_windows(
                     ImGui::Text("Timing: %s", timing_methods[p->timing].name_short);
                     ImGui::Text("Repetitions: %d", p->repetitions);
                     ImGui::Text("Verification: %s", p->verify_correctness
-                                ? (0 == result->verification_failure_count
-                                   ? "Succeeded"
-                                   : "Failed")
+                                ? (0 == result->verification_reject_count
+                                   ? "Success " ICON_FA_CHECK
+                                   : "Failure " ICON_FA_XMARK)
                                 : "Off");
                     // TODO Display more details:
                     //    - Total memory used by this result (i.e., size of local_arena)
@@ -725,7 +748,7 @@ void show_profiler_windows(
 
         for (usize i = 0; i < results->len; ++i) {
             profiler_result* result = &(results->data[i]);
-            if (!result->plot_visible) {
+            if (!result->gui.plot_visible) {
                 continue;
             }
 
@@ -779,7 +802,8 @@ void show_profiler_windows(
                 // TODO This gets slow when there are more than 10-30,000 points. Either (easiest)
                 // resample (only plot a subset of points), or (better!) implement our own
                 // PlotScatter that doesn't use ImDrawList but instead renders directly using
-                // graphics shaders, or find some other solution.
+                // graphics shaders; this will also let us use custom/mixed types (u64 for n and
+                // float for vertical axis).
 
                 // NOTE ImPlotMarker_Circle looks nicer than ImPlotMarker_Cross, but 3 times slower.
                 // (The marker geometry is described in implot_items.cpp).

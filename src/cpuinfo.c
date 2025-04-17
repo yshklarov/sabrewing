@@ -44,10 +44,25 @@ void get_cpu_tsc_features(bool* has_tsc, bool* has_invariant_tsc)
     *has_tsc = false;
     *has_invariant_tsc = false;
 
+    // Use CPUID to retrieve support for features.
+    // Reference: https://blog.winny.tech/posts/cpuid/
+
+    // Check support for RDTSC.
+    // (leaf 1, EDX bit 4)
     REG32 regs[4] = {0};  // EAX, EBX, ECX, EDX
-    CPUID(regs, 0x01);
+    CPUID(regs, 1);
     *has_tsc = regs[3] & (1 << 4);
 
+    /*
+    // Check support for RDTSCP.
+    // (leaf 0x80000001, EDX bit 27)
+    // TODO test this.
+    CPUID(regs, 0x80000001);
+    *has_tsc = regs[3] & (1 << 27);
+    */
+
+    // Check for invariant TSC.
+    // (leaf 0x80000001, EDX bit 8)
     CPUID(regs, 0x80000000);
     bool has_extended_features = (u32)regs[0] >= 0x80000007;
     if (has_extended_features) {

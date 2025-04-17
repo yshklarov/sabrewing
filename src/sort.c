@@ -35,9 +35,6 @@ static const sampler_sort samplers[] =
     {"Mixture", "Pick a sampler at random each time.", sample_mixture},
 };
 
-// TODO
-//     - Implement {radix sort, bucket sort, bitmap sort} (requires new samplers)
-//     - Implement {timsort, powersort} (requires new samplers)
 void sort_heap(u32*, u32, rand_state*, arena*);
 void sort_merge(u32*, u32, rand_state*, arena*);
 void sort_shell(u32*, u32, rand_state*, arena*);
@@ -506,7 +503,6 @@ void sort_broken(u32* data, u32 n, rand_state* rs, arena* scratch)
     }
 }
 
-// TODO Run target in a separate thread, and allow aborting it mid-call.
 void sort_miracle(u32* data, u32 n, rand_state* rs, arena* scratch)
 {
     (void)scratch; (void)rs;
