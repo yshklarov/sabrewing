@@ -854,10 +854,10 @@ int main(int, char**)
     ImGui_ImplWin32_EnableDpiAwareness();
     WNDCLASSEXW wc = {
         sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr),
-        nullptr, nullptr, nullptr, nullptr, L"WorkshopMain", nullptr };
+        nullptr, nullptr, nullptr, nullptr, L"AlgodromeMain", nullptr };
     ::RegisterClassExW(&wc);
     HWND hwnd = ::CreateWindowW(
-            wc.lpszClassName, L"Algorithm Workshop", WS_OVERLAPPEDWINDOW | WS_MAXIMIZE,
+            wc.lpszClassName, L"Algodrome", WS_OVERLAPPEDWINDOW | WS_MAXIMIZE,
             CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
             nullptr, nullptr, wc.hInstance, nullptr);
 

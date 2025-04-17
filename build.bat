@@ -1,7 +1,7 @@
 @echo off
 
 @set BUILD_DIR=build
-@set BIN_NAME=aworkshop.exe
+@set BIN_NAME=algodrome.exe
 
 @set SRC_DIR=..\src
 @set EXT_DIR=..\ext
