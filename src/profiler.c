@@ -68,6 +68,7 @@ typedef struct
     i32 target_idx;
     timing_method_id timing;
     bool adjust_for_timer_overhead;
+    i32 warmup_ms;
     //repeat_method repeat;
     i32 repetitions;
     bool verify_correctness;
@@ -88,6 +89,7 @@ profiler_params profiler_params_default()
     rtn.target_idx = 0;
     rtn.timing = TIMING_RDTSC;
     rtn.adjust_for_timer_overhead = false;
+    rtn.warmup_ms = 100;
     rtn.repetitions = 10;
     rtn.verify_correctness = true;
 
@@ -393,6 +395,23 @@ void query_host_info(host_info* host)
     host->initialized = true;
 }
 
+void waste_cpu_time(i32 milliseconds) {
+    if (milliseconds == 0) {
+        return;
+    }
+    u64 initial = get_ostime_us();
+    u64 final = initial + milliseconds*1000;
+    rand_state rng = {0};
+    rand_init_from_time(&rng);
+    // The "extra" bit shall prevent the compiler from optimizing away our code.
+    u64 extra = 0;
+    while(get_ostime_us() < (final + extra)) {
+        for (u32 i = 0; i < 500; ++i) {
+            extra = rand_raw(&rng) % 2;
+        }
+    }
+}
+
 
 profiler_result profiler_execute(logger* l, profiler_params params, host_info* host)
 {
@@ -409,13 +428,16 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info* h
     fn_sampler_sort sampler = samplers[params.sampler_idx].fn;
     fn_target_sort target = targets[params.target_idx].fn;
 
+    // The warmup must precede the call to get_timer_overhead().
+    waste_cpu_time(params.warmup_ms);
+
     // It would be nice to re-measure the overhead for every call of the target, just in case
     // the overhead is changing (with CPU scaling, system load, etc.); however, if we do that,
     // sometimes measuring the overhead gives too high a value (due to thread/process
     // pre-empting or other OS scheduler shenanigans). So, for now, we only measure once.
     u64 timer_overhead =
         params.adjust_for_timer_overhead
-        ? get_timer_overhead(params.timing, 20)
+        ? get_timer_overhead(params.timing, 1)
         : 0;
 
     for (i32 rep = 0; rep < params.repetitions; ++rep) {

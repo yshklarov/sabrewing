@@ -362,23 +362,34 @@ void show_profiler_windows(
     }
 
     if (ImGui::CollapsingHeader("Profiler options##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Text(ICON_FA_ROTATE); ImGui::SameLine(icon_width);
         ImGui::PushItemWidth(ImGui::GetFontSize() * 3);
+
+        ImGui::Text(ICON_FA_MUG_HOT); ImGui::SameLine(icon_width);
+        ImGui::DragInt(
+                "Warmup (ms)",
+                &next_run_params.warmup_ms,
+                1.0f, 0, I32_MAX, "%d",
+                ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SameLine(); HelpMarker(
+                "Perform sham computations before starting. This should be done for any processor "
+                "with dynamic frequency scaling, to induce a transition to the boost frequency "
+                "before commencing the workload.");
+
+        ImGui::Text(ICON_FA_ROTATE); ImGui::SameLine(icon_width);
         ImGui::DragInt(
                 "Repetitions",
                 &next_run_params.repetitions,
                 1, 1, I32_MAX, "%d",
                 ImGuiSliderFlags_AlwaysClamp);
-        ImGui::PopItemWidth();
         ImGui::SameLine(); HelpMarker(
-                "Perform the test run multiple times, using the same input, storing "
+                "Perform the entire test run multiple times, using the same inputs, storing "
                 "only the minimum time measured for each test unit (i.e., for each input). "
-                "This is slow, but helps to avoid bad measurements due to thead and process "
-                "pre-empting."
+                "This serves to discard faulty measurements due to thread and process pre-empting."
                 "\n\n"
                 "Increase this parameter if you need high-precision measurements, and you observe "
                 "poor repeatability across identical test runs. Decrease this parameter if you "
                 "are timing a slower algorithm and don't need good repeatability. ");
+
         i32 sampler_n_count = range_i32_count(next_run_params.ns);
         // TODO Deal with integer overflow: do not simply crash...
         i32 sampler_test_unit_count = sampler_n_count * next_run_params.sample_size;
@@ -388,6 +399,7 @@ void show_profiler_windows(
                 next_run_params.repetitions,
                 sampler_test_unit_count * next_run_params.repetitions);
 
+        ImGui::PopItemWidth();
         ImGui::Separator();
 
         ImGui::Text(ICON_FA_HOURGLASS_HALF "  Timing method:");
