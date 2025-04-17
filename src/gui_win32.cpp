@@ -8,7 +8,7 @@
 #include <stdint.h>
 //#include <tchar.h>
 
-#include "IconsFontAwesome6.h"
+#include "Lucide_Symbols.h"
 
 #include "util.c"
 #include "logger.c"
@@ -90,9 +90,8 @@ void set_imgui_style(logger* l, ImGuiIO* io, bool is_dark, u8 font_size_pixels)
 
     io->Fonts->ClearFonts();
     char const * font_filename = "../res/fonts/ClearSans-Regular.ttf";
-    // There are more solid icons freely available (many "regular" ones are non-free).
-    char const * icon_font_filename = "../res/fonts/FontAwesome6-solid-900.ttf";
-    //char const * icon_font_filename = "../res/fonts/FontAwesome6-regular-400.ttf";
+    // Lucide icon font (https://lucide.dev/icons/)
+    char const * icon_font_filename = "../res/fonts/" FONT_ICON_FILE_NAME_LC;
 
     ImFont* font = 0;
     ImFont* icon_font = 0;
@@ -128,12 +127,14 @@ void set_imgui_style(logger* l, ImGuiIO* io, bool is_dark, u8 font_size_pixels)
 
     if (file_exists(icon_font_filename)) {
         // Use an icon font for icons (see ImGui: FONTS.md).
-        // Example usage: ImGui::Button(ICON_FA_SEARCH " Search");
+        f32 icon_scaling = 1.0f;
         ImFontConfig config;
         config.MergeMode = true;
-        config.GlyphMinAdvanceX = 13.0f; // Make the icons monospaced.
-        static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
-        f32 icon_scaling = 1.0f;
+        // Align vertically; the coefficients are specific to the particular icon font we're using.
+        config.GlyphOffset = { 0.0f, (f32)font_size_pixels * (0.5f*icon_scaling - 0.3f) };
+        // Make the icons monospaced. (Unnecessary for Lucide Icons.)
+        //config.GlyphMinAdvanceX = (f32)font_size_pixels * 1.0f;
+        static const ImWchar icon_ranges[] = { ICON_MIN_LC, ICON_MAX_LC, 0 };
         icon_font = io->Fonts->AddFontFromFileTTF(
                 icon_font_filename, (f32)font_size_pixels * icon_scaling, &config, icon_ranges);
     }
@@ -206,7 +207,7 @@ void show_log_window(
     }
     ImGui::Begin("Log", &guiconf->visible_log_window);
 
-    if (ImGui::Button(ICON_FA_ERASER " Clear log")) {
+    if (ImGui::Button(ICON_LC_ERASER " Clear log")) {
         logger_clear(l);
     }
     ImGui::SameLine();
@@ -263,7 +264,7 @@ void show_profiler_windows(
     {
 
     if (ImGui::CollapsingHeader("Sampler##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Text(ICON_FA_DICE); ImGui::SameLine(icon_width);
+        ImGui::Text(ICON_LC_DICES); ImGui::SameLine(icon_width);
         ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
         if (ImGui::BeginCombo("Sampler", samplers[next_run_params.sampler_idx].name, 0)) {
             for (int i = 0; i < ARRAY_SIZE(samplers); i++) {
@@ -322,7 +323,7 @@ void show_profiler_windows(
 
         ImGui::PopItemWidth();
 
-        ImGui::Text(ICON_FA_SEEDLING); ImGui::SameLine(icon_width);
+        ImGui::Text(ICON_LC_SPROUT); ImGui::SameLine(icon_width);
         ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
         ImGui::InputScalar(
                 "RNG seed", ImGuiDataType_U64, &next_run_params.seed, NULL, NULL, "%llu");
@@ -333,7 +334,7 @@ void show_profiler_windows(
 
     if (ImGui::CollapsingHeader("Target##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
 
-        ImGui::Text(ICON_FA_BULLSEYE); ImGui::SameLine(icon_width);
+        ImGui::Text(ICON_LC_CROSSHAIR); ImGui::SameLine(icon_width);
         ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
         if (ImGui::BeginCombo("Target", targets[next_run_params.target_idx].name, 0)) {
             for (int i = 0; i < ARRAY_SIZE(targets); i++) {
@@ -353,7 +354,7 @@ void show_profiler_windows(
     }
 
     if (ImGui::CollapsingHeader("Verifier##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Text(ICON_FA_LIST_CHECK); ImGui::SameLine(icon_width);
+        ImGui::Text(ICON_LC_LIST_CHECK); ImGui::SameLine(icon_width);
         ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
         ImGui::Checkbox("Verify correctness of target output", &next_run_params.verify_correctness);
         ImGui::SameLine(); HelpMarker(
@@ -364,7 +365,7 @@ void show_profiler_windows(
     if (ImGui::CollapsingHeader("Profiler options##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::PushItemWidth(ImGui::GetFontSize() * 3);
 
-        ImGui::Text(ICON_FA_MUG_HOT); ImGui::SameLine(icon_width);
+        ImGui::Text(ICON_LC_COFFEE); ImGui::SameLine(icon_width);
         ImGui::DragInt(
                 "Warmup (ms)",
                 &next_run_params.warmup_ms,
@@ -375,7 +376,7 @@ void show_profiler_windows(
                 "with dynamic frequency scaling, to induce a transition to the boost frequency "
                 "before commencing the workload.");
 
-        ImGui::Text(ICON_FA_ROTATE); ImGui::SameLine(icon_width);
+        ImGui::Text(ICON_LC_REPEAT); ImGui::SameLine(icon_width);
         ImGui::DragInt(
                 "Repetitions",
                 &next_run_params.repetitions,
@@ -402,7 +403,7 @@ void show_profiler_windows(
         ImGui::PopItemWidth();
         ImGui::Separator();
 
-        ImGui::Text(ICON_FA_HOURGLASS_HALF "  Timing method:");
+        ImGui::Text(ICON_LC_TIMER "  Timing method:");
         ImGui::SameLine(); HelpMarker(
                 "If in doubt, pick RDTSC, as it is highly precise and fairly reliable, and exists "
                 "on all x86-64 CPUs."
@@ -435,7 +436,7 @@ void show_profiler_windows(
 
         ImGui::Separator();
 
-        ImGui::Text(ICON_FA_CIRCLE_INFO "  Timer information:");
+        ImGui::Text(ICON_LC_INFO "  Timer information:");
         if (ImGui::BeginTable("TimerInfo", 4, ImGuiTableFlags_SizingFixedFit)) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -474,6 +475,7 @@ void show_profiler_windows(
     }
 
     if (ImGui::CollapsingHeader("Processor information##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
+        //ImGui::Text(ICON_LC_CPU);
         if (ImGui::BeginTable("CPUInfo", 2, ImGuiTableFlags_SizingFixedFit)) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0); ImGui::Text("Processor:");
@@ -527,7 +529,7 @@ void show_profiler_windows(
     ImGui::EndChild();
 
     PushBigButton();
-    bool go_requested = ImGui::Button("Begin!   " ICON_FA_DRAGON);
+    bool go_requested = ImGui::Button("Begin!  " ICON_LC_BIKE);
     PopBigButton();
     if (go_requested) {
         profiler_result result = profiler_execute(l, next_run_params, host);
@@ -580,7 +582,7 @@ void show_profiler_windows(
             // TODO Find, or build, a three-way checkbox with a "partial" setting.
             ImGui::BeginDisabled(results->len == 0);
             f32 checkbox_size = ImGui::GetFrameHeight();
-            if (ImGui::Button(ICON_FA_CHART_LINE "##AllResultsVisibility",
+            if (ImGui::Button(ICON_LC_CHART_SPLINE "##AllResultsVisibility",
                               ImVec2(checkbox_size, checkbox_size))) {
                 for (usize i = 0; i < results->len; ++i) {
                     results->data[i].gui.plot_visible = !all_visible;
@@ -597,7 +599,7 @@ void show_profiler_windows(
             //ImGui::TableHeader("##Delete");
             //ImGui::SameLine(0,0);
             ImGui::BeginDisabled(results->len == 0);
-            if (ImGui::Button(ICON_FA_TRASH_CAN)) {
+            if (ImGui::Button(ICON_LC_TRASH_2)) {
                 ImGui::OpenPopup("Delete all results");
             }
             ImGui::EndDisabled();
@@ -650,7 +652,7 @@ void show_profiler_windows(
                                       ImGuiTreeNodeFlags_AllowOverlap
                         )) {
                     profiler_params* p = &result->params;
-                    if (ImGui::Button(ICON_FA_ARROW_RIGHT_TO_BRACKET " Again")) {
+                    if (ImGui::Button(ICON_LC_COPY " Again")) {
                         next_run_params = *p;
                     }
                     ImGui::SameLine();
@@ -662,7 +664,7 @@ void show_profiler_windows(
                     ImGui::Text("Seed: %llu", p->seed);
                     /*  // Copy to clipboard -- works, but is very ugly.
                     ImGui::SameLine();
-                    if (ImGui::Button(ICON_FA_CLIPBOARD)) {
+                    if (ImGui::Button(ICON_LC_CLIPBOARD)) {
                         #define MAX_SEED_STR_LEN 21
                         char seed_str[MAX_SEED_STR_LEN] = {0};
                         snprintf(seed_str, 21, "%llu", p->seed);
@@ -674,8 +676,8 @@ void show_profiler_windows(
                     ImGui::Text("Repetitions: %d", p->repetitions);
                     ImGui::Text("Verification: %s", p->verify_correctness
                                 ? (0 == result->verification_reject_count
-                                   ? "Success " ICON_FA_CHECK
-                                   : "Failure " ICON_FA_XMARK)
+                                   ? ICON_LC_CHECK " Success"
+                                   : ICON_LC_X " Failure")
                                 : "Off");
                     // TODO Display more details:
                     //    - Total memory used by this result (i.e., size of local_arena)
@@ -690,7 +692,7 @@ void show_profiler_windows(
                 // TODO Table column with zoom magnifier. See: Icon fonts (ImGui: FONTS.md);
                 //      Zooming to fit will require storing (double min/max for each axis)
                 //      in the struct profiler_result.
-                if (ImGui::Button(ICON_FA_XMARK)) {
+                if (ImGui::Button(ICON_LC_X)) {
                     // TODO Prompt for confirmation, maybe?
                     // Queue deletion for later, so we don't invalidate the loop index.
                     delete_requested = true;
