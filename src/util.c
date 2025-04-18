@@ -100,11 +100,9 @@ typedef struct
 
 /**************** Forward declarations ****************/
 
-u64 get_ostime_count();
+u64 get_ostime_count(bool pause_for_rollover);
 u64 get_ostime_freq();
 u64 get_ostime_ms();
-u64 get_ostime_us();
-u64 get_ostime_100ns(bool pause_for_rollover);
 timedate get_timedate();
 
 
@@ -267,7 +265,7 @@ void rand_init_from_seed(rand_state* x, u64 seed)
 // very fine on most platforms (less than 1 microsecond).
 u64 rand_get_seed_from_time()
 {
-    return get_ostime_100ns(false);
+    return get_ostime_count(false);
 }
 
 void rand_init_from_time(rand_state* x)
@@ -366,10 +364,16 @@ void sleep_ms(u32 milliseconds)
 }
 
 #ifdef _WIN32
-u64 get_ostime_count()
+u64 get_ostime_count(bool pause_for_rollover)
 {
     LARGE_INTEGER qpc_now;
     QueryPerformanceCounter(&qpc_now);
+    if (pause_for_rollover) {
+        LARGE_INTEGER qpc_prev = qpc_now;
+        do {
+            QueryPerformanceCounter(&qpc_now);
+        } while (qpc_prev.QuadPart == qpc_now.QuadPart);
+    }
     return qpc_now.QuadPart;
 }
 
@@ -384,11 +388,17 @@ u64 get_ostime_freq()
 }
 
 #else
-u64 get_ostime_count()
+u64 get_ostime_count(bool pause_for_rollover)
 {
-    struct timespec now_linux = {0};
-    clock_gettime(CLOCK_MONOTONIC_RAW, &now_linux);
-    return ((u64)now_linux.tv_sec * 1000000000) + (u64)now_linux.tv_nsec;
+    struct timespec ts_now = {0};
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts_now);
+    if (pause_for_rollover) {
+        struct timespec ts_prev = {0};
+        do {
+            clock_gettime(CLOCK_MONOTONIC_RAW, &ts_now);
+        } while ((ts_now.tv_sec == ts_prev.tv_sec) && (ts_now.tv_nsec == ts_prev.tv_nsec));
+    }
+    return ((u64)ts_now.tv_sec * 1000000000) + (u64)ts_now.tv_nsec;
 }
 
 u64 get_ostime_freq()
@@ -401,27 +411,9 @@ u64 get_ostime_freq()
 // not use the return value for human-readable timestamps.
 u64 get_ostime_ms()
 {
-    return (u64)(1000ll * get_ostime_count() / get_ostime_freq());
-}
-
-// Microseconds.
-u64 get_ostime_us()
-{
-    return (u64)(1000000ll * get_ostime_count() / get_ostime_freq());
-}
-
-// 100-nanoseconds units.
-// Note: It's tricky to define a reliable, cross-platform, monotonic get_ostime_ns() (with
-// 1-nanosecond units) because of integer overflow. It can probably be done, but it will need some
-// extra care.
-u64 get_ostime_100ns(bool pause_for_rollover)
-{
-    u64 count = get_ostime_count();
-    if (pause_for_rollover) {
-        u64 prev_count = count;
-        while (prev_count == (count = get_ostime_count()));
-    }
-    return (u64)(10000000ll * count / get_ostime_freq());
+    // This is about as high as we can go without risking integer overflow -- don't try to
+    // do the same thing for microseconds.
+    return (u64)(1000ll * get_ostime_count(false) / get_ostime_freq());
 }
 
 // Get the time and date in the local timzone.

@@ -49,7 +49,7 @@ typedef struct
     bool has_tsc;
     bool has_invariant_tsc;
 
-    // For measure_tsc_frequency().
+    u64 _wall_time_freq;
     u64 _wall_time_initial;
     u64 _tsc_initial;
 } host_info;
@@ -210,19 +210,22 @@ void update_tsc_frequency(host_info* host, bool first_call)
     // don't need so much precision because we're free to measure over a longer time interval.
 
     if (first_call) {
-        host->_wall_time_initial = get_ostime_100ns(!host->has_invariant_tsc);
+        host->_wall_time_initial = get_ostime_count(!host->has_invariant_tsc);
+        host->_wall_time_freq = get_ostime_freq();
         _mm_lfence();
         host->_tsc_initial = __rdtsc();
         return;
     }
 
-    u64 wall_time_now = get_ostime_100ns(!host->has_invariant_tsc);
+    u64 wall_time_now = get_ostime_count(!host->has_invariant_tsc);
     _mm_lfence();
     u64 tsc_now = __rdtsc();
 
     u64 wall_time_elapsed = wall_time_now - host->_wall_time_initial;
     u64 tsc_elapsed = tsc_now - host->_tsc_initial;
-    host->tsc_frequency = 10000000u * tsc_elapsed / MAX(1ll, wall_time_elapsed);
+    // Floating-point arithmetic here is the safest way to avoid integer overflow.
+    host->tsc_frequency = (u64)(0.5f + host->_wall_time_freq *
+           ((f32)tsc_elapsed / (f32)(MAX(1ll, wall_time_elapsed))));
 
     if (!host->has_invariant_tsc) {
         // Discard previous data, because the frequency may be changing.
@@ -336,11 +339,11 @@ u64 get_timer_frequency(timing_method_id tmid, host_info* host)
     }
 }
 
-// Get the overhead resulting from using the timer: time between successive calls.
-// This function tests a large number of repetitions to get a good measurement.
+// Get the overhead resulting from using the timer: time between successive calls. This function
+// tests a large number of repetitions to get a good measurement.
 // Warning: The CPU should be "warmed up" when calling this, to get up to its full (or boost)
 // frequency; otherwise, the return value may be an overestimate of the true overhead.
-u64 get_timer_overhead(timing_method_id tmid, u32 timeout_milliseconds)
+u64 get_timer_overhead(timing_method_id tmid, u32 timeout_ms)
 {
     // Our process might be pre-empted, so we need to do this many times to be very sure that we
     // don't over-estimate the overhead.
@@ -352,16 +355,15 @@ u64 get_timer_overhead(timing_method_id tmid, u32 timeout_milliseconds)
     // Note also: Some timing methods (QPCT!) are simply inconsistent in how long they take; still,
     // we look for the *minimum* time, because it would very bad to over-estimate.
 
-    u64 timeout_us = timeout_milliseconds * 1000;
-    u64 start_time = get_ostime_us();
-
+    u64 start_time = get_ostime_count(false);
+    u64 end_time = start_time + get_ostime_freq() * timeout_ms / 1000;
     u64 min_overhead = U64_MAX;
     do {
         u64 one = get_timer_value(tmid);
         u64 two = get_timer_value(tmid);
         u64 overhead = two - one;
         min_overhead = MIN(overhead, min_overhead);
-    } while (get_ostime_us() - start_time < timeout_us);
+    } while (get_ostime_count(false) < end_time);
     return min_overhead;
 }
 
@@ -395,17 +397,17 @@ void query_host_info(host_info* host)
     host->initialized = true;
 }
 
-void waste_cpu_time(i32 milliseconds) {
-    if (milliseconds == 0) {
+void waste_cpu_time(u32 timeout_ms) {
+    if (timeout_ms == 0) {
         return;
     }
-    u64 initial = get_ostime_us();
-    u64 final = initial + milliseconds*1000;
+    u64 start_time = get_ostime_count(false);
+    u64 end_time = start_time + get_ostime_freq() * timeout_ms / 1000;
     rand_state rng = {0};
     rand_init_from_time(&rng);
     // The "extra" bit shall prevent the compiler from optimizing away our code.
     u64 extra = 0;
-    while(get_ostime_us() < (final + extra)) {
+    while(get_ostime_count(false) < (end_time + extra)) {
         for (u32 i = 0; i < 500; ++i) {
             extra = rand_raw(&rng) % 2;
         }
