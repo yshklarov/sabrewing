@@ -315,15 +315,16 @@ void show_profiler_windows(
                 // TODO Deal correctly with integer overflow: do not simply crash...
                 sampler_n_count * next_run_params.sample_size);
         //ImGui::Text("Input to algorithm: Shuffled array of u32 of length n.");
+        ImGui::PopItemWidth();
+
+        ImGui::Separator();
+
+        ImGui::Text(ICON_LC_SPROUT); ImGui::SameLine(icon_width);
+
         ImGui::BeginDisabled(next_run_params.seed_from_time);
         if (next_run_params.seed_from_time) {
             next_run_params.seed = rand_get_seed_from_time();
         }
-        ImGui::Separator();
-
-        ImGui::PopItemWidth();
-
-        ImGui::Text(ICON_LC_SPROUT); ImGui::SameLine(icon_width);
         ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
         ImGui::InputScalar(
                 "RNG seed", ImGuiDataType_U64, &next_run_params.seed, NULL, NULL, "%llu");
@@ -372,9 +373,10 @@ void show_profiler_windows(
                 1.0f, 0, I32_MAX, "%d",
                 ImGuiSliderFlags_AlwaysClamp);
         ImGui::SameLine(); HelpMarker(
-                "Perform sham computations before starting. This should be done for any processor "
-                "with dynamic frequency scaling, to induce a transition to the boost frequency "
-                "before commencing the workload.");
+                "Perform sham computations to induce a transition to the boost frequency "
+                "before commencing the workload."
+                "\n\n"
+                "Set this to zero if the processor doesn't support dynamic frequency scaling. ");
 
         ImGui::Text(ICON_LC_REPEAT); ImGui::SameLine(icon_width);
         ImGui::DragInt(
