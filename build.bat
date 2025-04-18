@@ -5,19 +5,20 @@
 
 @set SRC_DIR=..\src
 @set EXT_DIR=..\ext
+@set RES_DIR=..\res
 @set IMGUI_DIR=%EXT_DIR%\imgui
 @set IMPLOT_DIR=%EXT_DIR%\implot
-@set FONTS_DIR=..\res\fonts
+@set SDL2_DIR=%EXT_DIR%\SDL2-2.32.4
+@set FONTS_DIR=%RES_DIR%\fonts
 
-@set INCLUDES=/I %FONTS_DIR% /I %IMGUI_DIR% /I %IMGUI_DIR%\backends /I %IMPLOT_DIR% /I "%DXSDK_DIR%/Include"
+@set INCLUDES=/I %FONTS_DIR% /I %IMGUI_DIR% /I %IMGUI_DIR%\backends /I %IMPLOT_DIR% /I "%DXSDK_DIR%/Include" /I %SDL2_DIR%\include
 @set DEFINES=/D UNICODE /D _UNICODE /D _SILENCE_CXX17_C_HEADER_DEPRECATION_WARNING
 
-@set SOURCES_IMGUI=%IMGUI_DIR%\imgui*.cpp %IMGUI_DIR%\backends\imgui_impl_dx9.cpp %IMGUI_DIR%\backends\imgui_impl_win32.cpp
+@set SOURCES_IMGUI=%IMGUI_DIR%\imgui*.cpp %IMGUI_DIR%\backends\imgui_impl_sdl2.cpp %IMGUI_DIR%\backends\imgui_impl_opengl3.cpp
 @set SOURCES_IMPLOT=%IMPLOT_DIR%\*.cpp
 @set SOURCES_PROJ=%SRC_DIR%\gui_win32.cpp
-::@set SOURCES=%SOURCES_PROJ% %SOURCES_IMGUI% %SOURCES_IMPLOT%
 
-@set LIBS=/LIBPATH:"%DXSDK_DIR%/Lib/x86" d3d9.lib
+@set LIBS=/LIBPATH:%SDL2_DIR%\lib\x64 SDL2.lib SDL2main.lib opengl32.lib shell32.lib
 
 :: Disable optimizations
 :: For now, we do this for our targets.c so as to not "cheat".
@@ -40,6 +41,9 @@ rc /nologo /fo..\%BUILD_DIR%\resources.res ../res/resources.rc
 :: Link
 cl /nologo *.obj resources.res /Zi /link %LIBS% /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup /OUT:%BIN_NAME% || goto :error
 
+:: Copy DLLs to build directory
+echo Copying DLLs...
+copy %SDL2_DIR%\lib\x64\SDL2.dll . /b
 
 :: Normal exit
 popd

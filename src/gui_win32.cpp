@@ -1,23 +1,24 @@
 #include "imgui.h"
 #define WIN32_LEAN_AND_MEAN    // Exclude rarely-used definitions.
-#include "imgui_impl_dx9.h"
-#include "imgui_impl_win32.h"
+#include "imgui_impl_sdl2.h"
+#include "imgui_impl_opengl3.h"
 #include "implot.h"
-#include <d3d9.h>
+#include <SDL.h>
+#if defined(IMGUI_IMPL_OPENGL_ES2)
+#include <SDL_opengles2.h>
+#else
+#include <SDL_opengl.h>
+#endif
+
 #include <intrin.h>
 #include <stdint.h>
-//#include <tchar.h>
 
 #include "Lucide_Symbols.h"
 
 #include "util.c"
 #include "logger.c"
 #include "cpuinfo.c"
-
-// TODO Compiler optimization options for targets: Make optimization flags user-selectable.
-// TODO Don't #include this -- instead, load samplers/targets at runtime at user's request.
 #include "sort.c"
-
 #include "profiler.c"
 
 
@@ -52,30 +53,12 @@ typedef struct
 } gui_style;
 
 
-/**** Data ****/
-
-static LPDIRECT3D9              g_pD3D = nullptr;
-static LPDIRECT3DDEVICE9        g_pd3dDevice = nullptr;
-static bool                     g_DeviceLost = false;
-static UINT                     g_ResizeWidth = 0, g_ResizeHeight = 0;
-static D3DPRESENT_PARAMETERS    g_d3dpp = {};
-
-
-/**** Forward declarations ****/
-
-bool CreateDeviceD3D(HWND hWnd);
-void CleanupDeviceD3D();
-void ResetDevice();
-LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-
 /****  Functions ****/
 
-void set_imgui_style(logger* l, ImGuiIO* io, bool is_dark, u8 font_size_pixels)
+void set_imgui_style(logger* l, ImGuiIO* io, bool is_dark, u8 font_size)
 {
-    is_dark ?
-        ImGui::StyleColorsDark() :
-        ImGui::StyleColorsLight();
+    // TODO Note ImGui has an experimental feature, branch feature/dynamic_fonts, as of 2025-03-05,
+    //      for better font resizing. We'll switch to it once it's ready.
 
     // TODO load multiple fonts (for code editing) and use ImGui::PushFont()/PopFont() to select
     //      them (see FONTS.md). AddFontFromFileTTF() returns ImFont*; store it so we can select it
@@ -88,73 +71,88 @@ void set_imgui_style(logger* l, ImGuiIO* io, bool is_dark, u8 font_size_pixels)
     // https://github.com/ocornut/imgui/blob/master/
     //                 docs/FAQ.md#q-how-should-i-handle-dpi-in-my-application
 
-    io->Fonts->ClearFonts();
-    char const * font_filename = "../res/fonts/ClearSans-Regular.ttf";
-    // Lucide icon font (https://lucide.dev/icons/)
-    char const * icon_font_filename = "../res/fonts/" FONT_ICON_FILE_NAME_LC;
+    // Don't re-load fonts unless we have to.
+    static u8 prev_font_size = 0;
+    if (font_size != prev_font_size) {
+        prev_font_size = font_size;
+        ImGui_ImplOpenGL3_DestroyFontsTexture();  // Don't leak memory.
+        io->Fonts->Clear();
 
-    ImFont* font = 0;
-    ImFont* icon_font = 0;
+        char const * font_filename = "../res/fonts/ClearSans-Regular.ttf";
+        // Lucide icon font (https://lucide.dev/icons/)
+        char const * icon_font_filename = "../res/fonts/" FONT_ICON_FILE_NAME_LC;
 
-    // ImGui has a built-in assert for when the file isn't found, so we must check, first.
-    if (file_exists(font_filename)) {
-        font = io->Fonts->AddFontFromFileTTF(font_filename, (f32)font_size_pixels);
-        // Load glyphs for additional symbol codepoints.
-        // To see which glyphs a font supports: Use https://fontdrop.info/
-        // For ImGui, this array's lifetime must persist.
-        static const ImWchar extra_ranges[] = {
-            // Basic multilingual plane.
-            0x0001, 0xFFFF,
-            // Higher planes. This is only useful if our font includes these glyphs, and
-            // requires defining IMGUI_USE_WCHAR32 in imconfig.h, and a clean rebuild.
-            //0x1EC70, 0x1FBFF,  // Additional symbols
-            0 };
+        ImFont* font = 0;
+        ImFont* icon_font = 0;
 
-        ImFontConfig config;
-        config.MergeMode = true;
-        io->Fonts->AddFontFromFileTTF(
-                font_filename, (f32)font_size_pixels, &config, extra_ranges
-            );
+        // ImGui has a built-in assert for when the file isn't found, so we must check, first.
+        if (file_exists(font_filename)) {
+            font = io->Fonts->AddFontFromFileTTF(font_filename, (f32)font_size);
+            // Load glyphs for additional symbol codepoints.
+            // To see which glyphs a font supports: Use https://fontdrop.info/
+            // For ImGui, this array's lifetime must persist.
+            static const ImWchar extra_ranges[] = {
+                // Basic multilingual plane.
+                0x0001, 0xFFFF,
+                // Higher planes. This is only useful if our font includes these glyphs, and
+                // requires defining IMGUI_USE_WCHAR32 in imconfig.h, and a clean rebuild.
+                //0x1EC70, 0x1FBFF,  // Additional symbols
+                0 };
+
+            ImFontConfig config;
+            config.MergeMode = true;
+            io->Fonts->AddFontFromFileTTF(
+                    font_filename, (f32)font_size, &config, extra_ranges
+                );
+        }
+        if (font == 0) {
+            logger_appendf(l, LOG_LEVEL_ERROR,
+                           "Failed to load font: %s. Falling back on ugly default font.",
+                           font_filename);
+            font = io->Fonts->AddFontDefault();
+            font_size = 13;  // For scaling of icon fonts and other UI elements later.
+            // We have to scale the default font because it is very tiny. This can be very ugly,
+            // but at least it's readable.
+            io->ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
+        }
+
+        if (file_exists(icon_font_filename)) {
+            // Use an icon font for icons (see ImGui: FONTS.md).
+            f32 icon_scaling = 1.0f;
+            ImFontConfig config;
+            config.MergeMode = true;
+            // Align vertically. Coefficients are specific to the icon font.
+            config.GlyphOffset = { 0.0f, (f32)font_size * (0.5f*icon_scaling - 0.3f) };
+            // Enforce monospace font.
+            config.GlyphMinAdvanceX = (f32)font_size * 1.0f;
+            config.GlyphMaxAdvanceX = (f32)font_size * 1.0f;
+            static const ImWchar icon_ranges[] = { ICON_MIN_LC, ICON_MAX_LC, 0 };
+            icon_font = io->Fonts->AddFontFromFileTTF(
+                    icon_font_filename, (f32)font_size * icon_scaling, &config, icon_ranges);
+        }
+        if (icon_font == 0) {
+            logger_appendf(l, LOG_LEVEL_ERROR,
+                           "Failed to load icons: %s.",
+                           icon_font_filename);
+        }
+
+        // ImGui_ImplOpenGL3_CreateFontsTexture();  // Unnecessary; will be called by NewFrame().
     }
-    if (font == 0) {
-        logger_appendf(l, LOG_LEVEL_ERROR,
-                       "Failed to load font: %s. Falling back on ugly default font.",
-                       font_filename);
-        font = io->Fonts->AddFontDefault();
-        // We have to scale the default font because it is very tiny.
-        io->ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
-    }
 
-    if (file_exists(icon_font_filename)) {
-        // Use an icon font for icons (see ImGui: FONTS.md).
-        f32 icon_scaling = 1.0f;
-        ImFontConfig config;
-        config.MergeMode = true;
-        // Align vertically; the coefficients are specific to the particular icon font we're using.
-        config.GlyphOffset = { 0.0f, (f32)font_size_pixels * (0.5f*icon_scaling - 0.3f) };
-        // Make the icons monospaced. (Unnecessary for Lucide Icons.)
-        //config.GlyphMinAdvanceX = (f32)font_size_pixels * 1.0f;
-        static const ImWchar icon_ranges[] = { ICON_MIN_LC, ICON_MAX_LC, 0 };
-        icon_font = io->Fonts->AddFontFromFileTTF(
-                icon_font_filename, (f32)font_size_pixels * icon_scaling, &config, icon_ranges);
-    }
-    if (icon_font == 0) {
-        logger_appendf(l, LOG_LEVEL_ERROR,
-                       "Failed to load icons: %s.",
-                       icon_font_filename);
-    }
-
-    //io->Fonts->Build();  // Unnecessary.
-    ResetDevice();
-
-    // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look
-    // identical to regular ones.
     ImGuiStyle& style = ImGui::GetStyle();
+    style = ImGuiStyle();  // Reset to default, so that ScaleAllSizes() works.
+    is_dark ?
+        ImGui::StyleColorsDark() :
+        ImGui::StyleColorsLight();
+    u8 base_font_size = 20;
+    style.ScaleAllSizes((f32)font_size / base_font_size);  // Adjust frame thicknesses and spacing.
+
     if (io->ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        // Get platform windows to look identical to ordinary OS windows.
         style.WindowRounding = 0.0f;
         style.Colors[ImGuiCol_WindowBg].w = 1.0f;
     } else {
-        style.WindowRounding = font_size_pixels * 0.3f;
+        style.WindowRounding = font_size * 0.3f;
     }
 }
 
@@ -175,15 +173,15 @@ static void HelpMarker(const char* desc)
 static void PushBigButton()
 {
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(
-                                1.2f * ImGui::GetFontSize(),
-                                1.0f * ImGui::GetFontSize()));
+                                1.2f * ImGui::GetFrameHeight(),
+                                1.0f * ImGui::GetFrameHeight()));
 }
 static void PopBigButton() { ImGui::PopStyleVar(); }
 static f32 GetBigButtonHeightWithSpacing()
 {
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(
-                                1.2f * ImGui::GetFontSize(),
-                                1.0f * ImGui::GetFontSize()));
+                                1.2f * ImGui::GetFrameHeight(),
+                                1.0f * ImGui::GetFrameHeight()));
     f32 result = ImGui::GetFrameHeightWithSpacing();
     ImGui::PopStyleVar();
     return result;
@@ -195,6 +193,16 @@ static f32 GetBigButtonHeightWithSpacing()
     return ImGui::Button(label);
 }*/
 
+void TextIcon(char* icon) {
+    f32 length = ImGui::GetFrameHeight();  // Always re-fetch, in case user changed it.
+    ImGui::BeginChildFrame(ImGui::GetID(icon),
+                      {length, length},
+                      ImGuiWindowFlags_NoBackground |
+                      ImGuiWindowFlags_NoDecoration |
+                      ImGuiWindowFlags_NoNav);
+    ImGui::Text(icon);
+    ImGui::EndChild();
+}
 
 /**** Our windows ****/
 
@@ -257,14 +265,14 @@ void show_profiler_windows(
 
     static profiler_params next_run_params = profiler_params_default();
 
-    f32 icon_width = ImGui::GetFontSize() * 1.5f;
+    f32 icon_width = ImGui::GetFrameHeightWithSpacing();
 
     ImGui::BeginChild("ProfilerParamsConfigurationChild",
                       ImVec2(0, -GetBigButtonHeightWithSpacing()));
     {
 
     if (ImGui::CollapsingHeader("Sampler##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Text(ICON_LC_DICES); ImGui::SameLine(icon_width);
+        TextIcon(ICON_LC_DICES); ImGui::SameLine(icon_width);
         ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
         if (ImGui::BeginCombo("Sampler", samplers[next_run_params.sampler_idx].name, 0)) {
             for (int i = 0; i < ARRAY_SIZE(samplers); i++) {
@@ -319,7 +327,7 @@ void show_profiler_windows(
 
         ImGui::Separator();
 
-        ImGui::Text(ICON_LC_SPROUT); ImGui::SameLine(icon_width);
+        TextIcon(ICON_LC_SPROUT); ImGui::SameLine(icon_width);
 
         ImGui::BeginDisabled(next_run_params.seed_from_time);
         if (next_run_params.seed_from_time) {
@@ -335,7 +343,7 @@ void show_profiler_windows(
 
     if (ImGui::CollapsingHeader("Target##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
 
-        ImGui::Text(ICON_LC_CROSSHAIR); ImGui::SameLine(icon_width);
+        TextIcon(ICON_LC_CROSSHAIR); ImGui::SameLine(icon_width);
         ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
         if (ImGui::BeginCombo("Target", targets[next_run_params.target_idx].name, 0)) {
             for (int i = 0; i < ARRAY_SIZE(targets); i++) {
@@ -355,7 +363,7 @@ void show_profiler_windows(
     }
 
     if (ImGui::CollapsingHeader("Verifier##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Text(ICON_LC_LIST_CHECK); ImGui::SameLine(icon_width);
+        TextIcon(ICON_LC_LIST_CHECK); ImGui::SameLine(icon_width);
         ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
         ImGui::Checkbox("Verify correctness of target output", &next_run_params.verify_correctness);
         ImGui::SameLine(); HelpMarker(
@@ -366,7 +374,7 @@ void show_profiler_windows(
     if (ImGui::CollapsingHeader("Profiler options##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::PushItemWidth(ImGui::GetFontSize() * 3);
 
-        ImGui::Text(ICON_LC_COFFEE); ImGui::SameLine(icon_width);
+        TextIcon(ICON_LC_COFFEE); ImGui::SameLine(icon_width);
         ImGui::DragInt(
                 "Warmup (ms)",
                 &next_run_params.warmup_ms,
@@ -378,7 +386,7 @@ void show_profiler_windows(
                 "\n\n"
                 "Set this to zero if the processor doesn't support dynamic frequency scaling. ");
 
-        ImGui::Text(ICON_LC_REPEAT); ImGui::SameLine(icon_width);
+        TextIcon(ICON_LC_REPEAT); ImGui::SameLine(icon_width);
         ImGui::DragInt(
                 "Repetitions",
                 &next_run_params.repetitions,
@@ -405,7 +413,8 @@ void show_profiler_windows(
         ImGui::PopItemWidth();
         ImGui::Separator();
 
-        ImGui::Text(ICON_LC_TIMER "  Timing method:");
+        TextIcon(ICON_LC_TIMER); ImGui::SameLine(icon_width);
+        ImGui::Text("Timing method:");
         ImGui::SameLine(); HelpMarker(
                 "If in doubt, pick RDTSC, as it is highly precise and fairly reliable, and exists "
                 "on all x86-64 CPUs."
@@ -438,7 +447,8 @@ void show_profiler_windows(
 
         ImGui::Separator();
 
-        ImGui::Text(ICON_LC_INFO "  Timer information:");
+        TextIcon(ICON_LC_INFO); ImGui::SameLine(icon_width);
+        ImGui::Text("Timer information:");
         if (ImGui::BeginTable("TimerInfo", 4, ImGuiTableFlags_SizingFixedFit)) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -553,7 +563,7 @@ void show_profiler_windows(
 
     ImGui::Begin("Results List");
     static bool visible_display_options = true;
-    // TODO Ewww! Do layout better.
+    // TODO Ewww! Do layout calculations better.
     ImGui::BeginChild("ProfilerResultsChild",
                       ImVec2(0, -(1 + (visible_display_options ? 5 : 0)) *
                              ImGui::GetFrameHeightWithSpacing()));
@@ -574,7 +584,7 @@ void show_profiler_windows(
             //ImGui::TableHeader("##Visible");
             //ImGui::SameLine(0,0);
             usize num_results_visible = 0;
-            // Recomputing every frame. Eww!
+            // Recomputing in every frame; yuck!
             for (usize i = 0; i < results->len; ++i) {
                 if (results->data[i].gui.plot_visible) {
                     ++num_results_visible;
@@ -583,6 +593,7 @@ void show_profiler_windows(
             bool all_visible = (num_results_visible == results->len) && (results->len > 0);
             // TODO Find, or build, a three-way checkbox with a "partial" setting.
             ImGui::BeginDisabled(results->len == 0);
+            // Match the size/shape of the checkboxes below.
             f32 checkbox_size = ImGui::GetFrameHeight();
             if (ImGui::Button(ICON_LC_CHART_SPLINE "##AllResultsVisibility",
                               ImVec2(checkbox_size, checkbox_size))) {
@@ -593,9 +604,16 @@ void show_profiler_windows(
             ImGui::EndDisabled();
 
             ImGui::TableSetColumnIndex(1);
-            ImGui::TableHeader("##Details");
-            ImGui::SameLine(0,0);
-            ImGui::Text("Result Details");
+            // The button is the simplest element with the precisely correct dimensions and
+            // background color. We push colors instead of disabling the button, because we don't
+            // want greyed-out text.
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_Button));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4(ImGuiCol_Button));
+            if (ImGui::Button("Result Details##ResultDetailsHeader",
+                              ImVec2(-1, 0))) {
+                // We could sort the results list here, perhaps.
+            }
+            ImGui::PopStyleColor(2);
 
             ImGui::TableSetColumnIndex(2);
             //ImGui::TableHeader("##Delete");
@@ -815,7 +833,7 @@ void show_profiler_windows(
             }
 
             if (guiconf->visible_data_individual) {
-                // TODO This gets slow when there are more than 10-30,000 points. Either (easiest)
+                // TODO This gets slow when there are more than 50-100,000 points. Either (easiest)
                 // resample (only plot a subset of points), or (better!) implement our own
                 // PlotScatter that doesn't use ImDrawList but instead renders directly using
                 // graphics shaders; this will also let us use custom/mixed types (u64 for n and
@@ -853,42 +871,94 @@ void show_profiler_windows(
 
 int main(int, char**)
 {
-    ImGui_ImplWin32_EnableDpiAwareness();
-    WNDCLASSEXW wc = {
-        sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr),
-        nullptr, nullptr, nullptr, nullptr, L"SabrewingMain", nullptr };
-    // Icon IDs are specicied in `resources.rc`.
-    wc.hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(101));
-    wc.hIconSm = wc.hIcon;
-
-    ::RegisterClassExW(&wc);
-    HWND hwnd = ::CreateWindowW(
-            wc.lpszClassName, L"Sabrewing", WS_OVERLAPPEDWINDOW | WS_MAXIMIZE,
-            CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-            nullptr, nullptr, wc.hInstance, nullptr);
-
-    // Initialize Direct3D
-    if (!CreateDeviceD3D(hwnd))
-    {
-        CleanupDeviceD3D();
-        ::UnregisterClassW(wc.lpszClassName, wc.hInstance);
-        return 1;
-    }
-
-    // Win32: Show the window.
     // TODO Restore maximized/restored state from before, just like remedybg. In fact, restore all
     //      GUI settings.
     //      See: https://learn.microsoft.com/en-us/windows/
     //         win32/api/winuser/nf-winuser-showwindow?redirectedfrom=MSDN
-    ::ShowWindow(hwnd, SW_MAXIMIZE);
-    //::ShowWindow(hwnd, SW_SHOWDEFAULT);
-    ::UpdateWindow(hwnd);
 
-    // Set up Dear ImGui context
+    #ifdef _WIN32
+    ::SetProcessDPIAware();
+    #endif
+
+    // Set up SDL.
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0)
+    {
+        printf("Error: %s\n", SDL_GetError());
+        return -1;
+    }
+
+    // Select GL+GLSL version.
+#if defined(IMGUI_IMPL_OPENGL_ES2)
+    // GL ES 2.0 + GLSL 100 (WebGL 1.0)
+    const char* glsl_version = "#version 100";
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#elif defined(IMGUI_IMPL_OPENGL_ES3)
+    // GL ES 3.0 + GLSL 300 es (WebGL 2.0)
+    const char* glsl_version = "#version 300 es";
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#elif defined(__APPLE__)
+    // GL 3.2 Core + GLSL 150
+    const char* glsl_version = "#version 150";
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG); // Always required on Mac
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+#else
+    // GL 3.0 + GLSL 130
+    const char* glsl_version = "#version 130";
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#endif
+
+    // From 2.0.18: Enable native IME.
+#ifdef SDL_HINT_IME_SHOW_UI
+    SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
+#endif
+
+    // Create window with graphics context
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+    SDL_WindowFlags window_flags = (SDL_WindowFlags)(
+            SDL_WINDOW_OPENGL |
+            SDL_WINDOW_RESIZABLE |
+            SDL_WINDOW_MAXIMIZED |
+            SDL_WINDOW_ALLOW_HIGHDPI);
+    SDL_Window* window = SDL_CreateWindow(
+            "Sabrewing",
+            SDL_WINDOWPOS_CENTERED,
+            SDL_WINDOWPOS_CENTERED,
+            1280,
+            720,
+            window_flags);
+    if (window == nullptr)
+    {
+        printf("Error: SDL_CreateWindow(): %s\n", SDL_GetError());
+        return -1;
+    }
+
+    SDL_GLContext gl_context = SDL_GL_CreateContext(window);
+    if (gl_context == nullptr)
+    {
+        printf("Error: SDL_GL_CreateContext(): %s\n", SDL_GetError());
+        return -1;
+    }
+
+    SDL_GL_MakeCurrent(window, gl_context);
+    SDL_GL_SetSwapInterval(1);  // Enable vsync
+
+    // Set up Dear ImGui context.
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImPlot::CreateContext();
-
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
@@ -897,16 +967,13 @@ int main(int, char**)
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
     //io.ConfigViewportsNoAutoMerge = true;
     //io.ConfigViewportsNoTaskBarIcon = true;
-    // We do NOT set DpiEnableScaleFonts, because it results in blurry text.
-    //io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
-
     io.IniFilename = "sabrewing.ini";
 
-    // Setup Platform/Renderer backends
-    ImGui_ImplWin32_Init(hwnd);
-    ImGui_ImplDX9_Init(g_pd3dDevice);
+    // Set up platform/renderer backends.
+    ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
+    ImGui_ImplOpenGL3_Init(glsl_version);
 
-    // User-facing GUI options.
+    // Initialize user-facing GUI options.
     gui_config guiconf = {0};
     guiconf.visible_imgui_demo_window = true;
     guiconf.visible_implot_demo_window = true;
@@ -920,16 +987,16 @@ int main(int, char**)
     guiconf.log_show_timestamps = true;
     guiconf.auto_zoom = true;
 
-    // GUI styling/theme.
+    // GUI styling/theme
     gui_style guistyle;
     guistyle.is_dark = false;
-    guistyle.font_size_intent = 28;
     guistyle.font_size = 28;
+    guistyle.font_size_intent = guistyle.font_size;
     guistyle.font_size_min = 8;
     guistyle.font_size_max = 60;
     bool guistyle_changed = true;
 
-    // Global state (non-GUI).
+    // Global state (non-GUI)
     logger global_log = logger_create();
     arena global_arena = arena_create(GLOBAL_ARENA_SIZE);
     host_info host = {0};
@@ -940,51 +1007,40 @@ int main(int, char**)
     while (!done) {
         query_host_info(&host);  // Inside loop, to update timer data.
 
-        // Poll and handle messages (inputs, window resize, etc.)
-        // See the WndProc() function below for our to dispatch events to the Win32 backend.
-        MSG msg;
-        while (::PeekMessage(&msg, nullptr, 0U, 0U, PM_REMOVE)) {
-            ::TranslateMessage(&msg);
-            ::DispatchMessage(&msg);
-            if (msg.message == WM_QUIT)
+        // Poll and handle events (inputs, window resize, etc.)
+        // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui
+        // wants to use your inputs.
+        // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main
+        //   application, or clear/overwrite your copy of the mouse data.
+        // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main
+        //   application, or clear/overwrite your copy of the keyboard data.
+        // Generally you may always pass all inputs to dear imgui, and hide them from your
+        // application based on those two flags.
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            ImGui_ImplSDL2_ProcessEvent(&event);
+            if (event.type == SDL_QUIT)
+                done = true;
+            if (event.type == SDL_WINDOWEVENT &&
+                event.window.event == SDL_WINDOWEVENT_CLOSE &&
+                event.window.windowID == SDL_GetWindowID(window))
                 done = true;
         }
-        if (done)
-            break;
-
-        // Handle lost D3D9 device
-        if (g_DeviceLost) {
-            HRESULT hr = g_pd3dDevice->TestCooperativeLevel();
-            if (hr == D3DERR_DEVICELOST) {
-                ::Sleep(10);
-                continue;
-            }
-            if (hr == D3DERR_DEVICENOTRESET) {
-                ResetDevice();
-            }
-            g_DeviceLost = false;
+        if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) {
+            SDL_Delay(10);
+            continue;
         }
 
-        // Handle window resize (we don't resize directly in the WM_SIZE handler)
-        if (g_ResizeWidth != 0 && g_ResizeHeight != 0) {
-            g_d3dpp.BackBufferWidth = g_ResizeWidth;
-            g_d3dpp.BackBufferHeight = g_ResizeHeight;
-            g_ResizeWidth = g_ResizeHeight = 0;  // Clear resize command.
-            ResetDevice();
-        }
-
-        // Update styles. Note that the font must be set before ImGui::NewFrame().
+        // Update styles. Note that the font must be set before ImGui::NewFrame(). (??)
         // TODO Detect DPI changes and set style/scaling appropriately. See:
-        // https://github.com/ocornut/imgui/blob/master/
-        //                 docs/FAQ.md#q-how-should-i-handle-dpi-in-my-application
         if (guistyle_changed) {
             set_imgui_style(&global_log, &io, guistyle.is_dark, guistyle.font_size);
             guistyle_changed = false;
         }
 
         // Start the Dear ImGui frame
-        ImGui_ImplDX9_NewFrame();
-        ImGui_ImplWin32_NewFrame();
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
         // Main menu
@@ -1052,7 +1108,7 @@ int main(int, char**)
             ImGuiWindowFlags_NoMove |
             ImGuiWindowFlags_NoBringToFrontOnFocus;
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);  // Square corners on dockspace.
-        ImGui::Begin("MainDockspace", nullptr, dockspace_flags);
+        ImGui::Begin("(Root Dockspace)", nullptr, dockspace_flags);
         ImGui::PopStyleVar();
         // We create a separate dockspace hosted within the main viewport. This works better than
         // permitting docking in the main viewport directly.
@@ -1076,127 +1132,40 @@ int main(int, char**)
         show_profiler_windows(&guiconf, &global_log, &global_arena, &host, &profiler_results);
 
         // Rendering
-        ImGui::EndFrame();
+        ImGui::Render();
+        glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
+        ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+        glClearColor(
+                clear_color.x * clear_color.w,
+                clear_color.y * clear_color.w,
+                clear_color.z * clear_color.w,
+                clear_color.w);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-        g_pd3dDevice->SetRenderState(D3DRS_ZENABLE, FALSE);
-        g_pd3dDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
-        g_pd3dDevice->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
-        D3DCOLOR clear_col_dx = D3DCOLOR_RGBA(0, 0, 0, 255);
-        g_pd3dDevice->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, clear_col_dx, 1.0f, 0);
-        if (g_pd3dDevice->BeginScene() >= 0) {
-            ImGui::Render();
-            ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-            g_pd3dDevice->EndScene();
-        }
-
-        // Update and Render additional Platform Windows
-        if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        // Update and Render additional platform windows.
+        // (Platform functions may change the current OpenGL context, so we save/restore it. If they
+        // don't change the context, we could call SDL_GL_MakeCurrent(window, gl_context) directly.)
+        if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+        {
+            SDL_Window* backup_current_window = SDL_GL_GetCurrentWindow();
+            SDL_GLContext backup_current_context = SDL_GL_GetCurrentContext();
             ImGui::UpdatePlatformWindows();
             ImGui::RenderPlatformWindowsDefault();
+            SDL_GL_MakeCurrent(backup_current_window, backup_current_context);
         }
 
-        HRESULT result = g_pd3dDevice->Present(nullptr, nullptr, nullptr, nullptr);
-        if (result == D3DERR_DEVICELOST)
-            g_DeviceLost = true;
+        SDL_GL_SwapWindow(window);
     }
 
     // Cleanup
-    ImGui_ImplDX9_Shutdown();
-    ImGui_ImplWin32_Shutdown();
-    ImPlot::DestroyContext();
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
 
-    CleanupDeviceD3D();
-    ::DestroyWindow(hwnd);
-    ::UnregisterClassW(wc.lpszClassName, wc.hInstance);
+    SDL_GL_DeleteContext(gl_context);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
 
     return 0;
-}
-
-/**** Platform helper functions ****/
-
-bool CreateDeviceD3D(HWND hWnd)
-{
-    if ((g_pD3D = Direct3DCreate9(D3D_SDK_VERSION)) == nullptr)
-        return false;
-
-    // Create the D3DDevice
-    ZeroMemory(&g_d3dpp, sizeof(g_d3dpp));
-    g_d3dpp.Windowed = TRUE;
-    g_d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-    g_d3dpp.BackBufferFormat = D3DFMT_UNKNOWN; // Need to use an explicit format with alpha if needing per-pixel alpha composition.
-    g_d3dpp.EnableAutoDepthStencil = TRUE;
-    g_d3dpp.AutoDepthStencilFormat = D3DFMT_D16;
-    g_d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_ONE;           // Present with vsync
-    //g_d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;   // Present without vsync, maximum unthrottled framerate
-    if (g_pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hWnd, D3DCREATE_HARDWARE_VERTEXPROCESSING, &g_d3dpp, &g_pd3dDevice) < 0)
-        return false;
-
-    return true;
-}
-
-void CleanupDeviceD3D()
-{
-    if (g_pd3dDevice) { g_pd3dDevice->Release(); g_pd3dDevice = nullptr; }
-    if (g_pD3D) { g_pD3D->Release(); g_pD3D = nullptr; }
-}
-
-void ResetDevice()
-{
-    ImGui_ImplDX9_InvalidateDeviceObjects();
-    HRESULT hr = g_pd3dDevice->Reset(&g_d3dpp);
-    if (hr == D3DERR_INVALIDCALL)
-        IM_ASSERT(0);
-    ImGui_ImplDX9_CreateDeviceObjects();
-}
-
-#ifndef WM_DPICHANGED
-#define WM_DPICHANGED 0x02E0 // From Windows SDK 8.1+ headers
-#endif
-
-// Forward declare message handler from imgui_impl_win32.cpp
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-// Win32 message handler
-// You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
-// - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application, or clear/overwrite your copy of the mouse data.
-// - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application, or clear/overwrite your copy of the keyboard data.
-// Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
-LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
-        return true;
-
-    switch (msg) {
-    case WM_SIZE: {
-        if (wParam == SIZE_MINIMIZED)
-            return 0;
-        g_ResizeWidth = (UINT)LOWORD(lParam); // Queue resize
-        g_ResizeHeight = (UINT)HIWORD(lParam);
-        return 0;
-    } break;
-    case WM_SYSCOMMAND: {
-        if ((wParam & 0xfff0) == SC_KEYMENU) // Disable ALT application menu
-            return 0;
-    } break;
-    case WM_DESTROY: {
-        ::PostQuitMessage(0);
-        return 0;
-    } break;
-    case WM_DPICHANGED: {
-        if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_DpiEnableScaleViewports) {
-            //const int dpi = HIWORD(wParam);
-            //printf("WM_DPICHANGED to %d (%.0f%%)\n", dpi, (float)dpi / 96.0f * 100.0f);
-            const RECT* suggested_rect = (RECT*)lParam;
-            ::SetWindowPos(
-                    hWnd, nullptr,
-                    suggested_rect->left,
-                    suggested_rect->top,
-                    suggested_rect->right - suggested_rect->left,
-                    suggested_rect->bottom - suggested_rect->top,
-                    SWP_NOZORDER | SWP_NOACTIVATE);
-        }
-    } break;
-    }
-    return ::DefWindowProcW(hWnd, msg, wParam, lParam);
 }
