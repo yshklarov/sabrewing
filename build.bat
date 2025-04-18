@@ -34,8 +34,11 @@ cl /nologo /c /W4 /Zi /FC /utf-8 /std:c++17 /O2 /Gm %INCLUDES% %DEFINES% %SOURCE
 :: Compile our own code.
 cl /nologo /c /W4 /Zi /FC /utf-8 /std:c++17 %OPTIMIZER_FLAGS% /MP %INCLUDES% %DEFINES% %SOURCES_PROJ% || goto :error
 
+:: Build resources
+rc /nologo /fo..\%BUILD_DIR%\resources.res ../res/resources.rc
+
 :: Link
-cl /nologo *.obj /Zi /link %LIBS% /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup /OUT:%BIN_NAME% || goto :error
+cl /nologo *.obj resources.res /Zi /link %LIBS% /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup /OUT:%BIN_NAME% || goto :error
 
 
 :: Normal exit

@@ -855,6 +855,10 @@ int main(int, char**)
     WNDCLASSEXW wc = {
         sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr),
         nullptr, nullptr, nullptr, nullptr, L"AlgodromeMain", nullptr };
+    // Icon IDs are specicied in `resources.rc`.
+    wc.hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(101));
+    wc.hIconSm = wc.hIcon;
+
     ::RegisterClassExW(&wc);
     HWND hwnd = ::CreateWindowW(
             wc.lpszClassName, L"Algodrome", WS_OVERLAPPEDWINDOW | WS_MAXIMIZE,

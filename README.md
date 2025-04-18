@@ -1,5 +1,5 @@
-Algorithm Workshop
-==================
+Algodrome
+=========
 
 An algorithmic profiler.
 
