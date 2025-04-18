@@ -529,7 +529,7 @@ void show_profiler_windows(
     ImGui::EndChild();
 
     PushBigButton();
-    bool go_requested = ImGui::Button("Begin!  " ICON_LC_BIKE);
+    bool go_requested = ImGui::Button("BEGIN  " ICON_LC_WIND);
     PopBigButton();
     if (go_requested) {
         profiler_result result = profiler_execute(l, next_run_params, host);
@@ -854,14 +854,14 @@ int main(int, char**)
     ImGui_ImplWin32_EnableDpiAwareness();
     WNDCLASSEXW wc = {
         sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr),
-        nullptr, nullptr, nullptr, nullptr, L"AlgodromeMain", nullptr };
+        nullptr, nullptr, nullptr, nullptr, L"SabrewingMain", nullptr };
     // Icon IDs are specicied in `resources.rc`.
     wc.hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(101));
     wc.hIconSm = wc.hIcon;
 
     ::RegisterClassExW(&wc);
     HWND hwnd = ::CreateWindowW(
-            wc.lpszClassName, L"Algodrome", WS_OVERLAPPEDWINDOW | WS_MAXIMIZE,
+            wc.lpszClassName, L"Sabrewing", WS_OVERLAPPEDWINDOW | WS_MAXIMIZE,
             CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
             nullptr, nullptr, wc.hInstance, nullptr);
 
@@ -897,6 +897,8 @@ int main(int, char**)
     //io.ConfigViewportsNoTaskBarIcon = true;
     // We do NOT set DpiEnableScaleFonts, because it results in blurry text.
     //io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
+
+    io.IniFilename = "sabrewing.ini";
 
     // Setup Platform/Renderer backends
     ImGui_ImplWin32_Init(hwnd);
