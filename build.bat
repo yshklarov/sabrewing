@@ -11,12 +11,12 @@
 @set SDL2_DIR=%EXT_DIR%\SDL2-2.32.4
 @set FONTS_DIR=%RES_DIR%\fonts
 
-@set INCLUDES=/I %FONTS_DIR% /I %IMGUI_DIR% /I %IMGUI_DIR%\backends /I %IMPLOT_DIR% /I "%DXSDK_DIR%/Include" /I %SDL2_DIR%\include
+@set INCLUDES=/I %FONTS_DIR% /I %IMGUI_DIR% /I %IMGUI_DIR%\backends /I %IMPLOT_DIR% /I %SDL2_DIR%\include
 @set DEFINES=/D UNICODE /D _UNICODE /D _SILENCE_CXX17_C_HEADER_DEPRECATION_WARNING
 
 @set SOURCES_IMGUI=%IMGUI_DIR%\imgui*.cpp %IMGUI_DIR%\backends\imgui_impl_sdl2.cpp %IMGUI_DIR%\backends\imgui_impl_opengl3.cpp
 @set SOURCES_IMPLOT=%IMPLOT_DIR%\*.cpp
-@set SOURCES_PROJ=%SRC_DIR%\gui_win32.cpp
+@set SOURCES_PROJ=%SRC_DIR%\gui.cpp
 
 @set LIBS=/LIBPATH:%SDL2_DIR%\lib\x64 SDL2.lib SDL2main.lib opengl32.lib shell32.lib
 

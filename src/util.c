@@ -1,6 +1,8 @@
 #ifndef _WIN32
-  // We need _POSIX_C_SOURCE 199309L so that certain time functions are defined.
-  #define _POSIX_C_SOURCE 199309L
+#ifndef _POSIX_C_SOURCE
+// We need _POSIX_C_SOURCE 199309L so that certain time functions are defined.
+#define _POSIX_C_SOURCE 199309L
+#endif
 #endif
 
 #include <assert.h>

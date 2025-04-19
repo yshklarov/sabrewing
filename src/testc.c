@@ -9,8 +9,8 @@
 // Periodically run the following commands to test conformance to C99:
 //
 // Win32:  cl /nologo /W4 /c /FoNUL testc.c
-// Linux:  gcc -Wall -Wextra -std=c99 -fsyntax-only testc.c
-// Linux:  clang -Wall -Wextra -std=c99 -fsyntax-only testc.c
+// Linux:  gcc -Wall -Wextra -Wformat -std=c99 -fsyntax-only testc.c
+// Linux:  clang -Wall -Wextra -Wformat -std=c99 -fsyntax-only testc.c
 //
 // For additional linting:
 //

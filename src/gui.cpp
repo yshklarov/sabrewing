@@ -10,7 +10,6 @@
 #include <SDL_opengl.h>
 #endif
 
-#include <intrin.h>
 #include <stdint.h>
 
 #include "Lucide_Symbols.h"
@@ -193,14 +192,14 @@ static f32 GetBigButtonHeightWithSpacing()
     return ImGui::Button(label);
 }*/
 
-void TextIcon(char* icon) {
+void TextIcon(char const* icon) {
     f32 length = ImGui::GetFrameHeight();  // Always re-fetch, in case user changed it.
     ImGui::BeginChildFrame(ImGui::GetID(icon),
                       {length, length},
                       ImGuiWindowFlags_NoBackground |
                       ImGuiWindowFlags_NoDecoration |
                       ImGuiWindowFlags_NoNav);
-    ImGui::Text(icon);
+    ImGui::TextUnformatted(icon);
     ImGui::EndChild();
 }
 
@@ -222,7 +221,7 @@ void show_log_window(
     if (ImGui::Button("Options...")) {
         ImGui::OpenPopup("Logging options");
     }
-    if (ImGui::BeginPopup("Logging options", NULL)) {
+    if (ImGui::BeginPopup("Logging options", 0)) {
         ImGui::Checkbox("Show timestamps", &guiconf->log_show_timestamps);
         ImGui::EndPopup();
     }
@@ -275,7 +274,7 @@ void show_profiler_windows(
         TextIcon(ICON_LC_DICES); ImGui::SameLine(icon_width);
         ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
         if (ImGui::BeginCombo("Sampler", samplers[next_run_params.sampler_idx].name, 0)) {
-            for (int i = 0; i < ARRAY_SIZE(samplers); i++) {
+            for (u32 i = 0; i < (u32)ARRAY_SIZE(samplers); i++) {
                 bool is_selected = (next_run_params.sampler_idx == i);
                 if (ImGui::Selectable(samplers[i].name, is_selected)) {
                     next_run_params.sampler_idx = i;
@@ -287,7 +286,7 @@ void show_profiler_windows(
             }
             ImGui::EndCombo();
         }
-        ImGui::Text(samplers[next_run_params.sampler_idx].description);
+        ImGui::TextUnformatted(samplers[next_run_params.sampler_idx].description);
         ImGui::PopItemWidth();
         ImGui::Separator();
 
@@ -317,11 +316,11 @@ void show_profiler_windows(
                 ImGuiSliderFlags_AlwaysClamp);
         i32 sampler_n_count = range_i32_count(next_run_params.ns);
         ImGui::Text(
-                u8"The sampler will generate %d × %d = %ld test units.",
+                u8"The sampler will generate %d × %d = %lu test units.",
                 sampler_n_count,
                 next_run_params.sample_size,
                 // TODO Deal correctly with integer overflow: do not simply crash...
-                sampler_n_count * next_run_params.sample_size);
+                (u64)sampler_n_count * (u64)next_run_params.sample_size);
         //ImGui::Text("Input to algorithm: Shuffled array of u32 of length n.");
         ImGui::PopItemWidth();
 
@@ -346,7 +345,7 @@ void show_profiler_windows(
         TextIcon(ICON_LC_CROSSHAIR); ImGui::SameLine(icon_width);
         ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
         if (ImGui::BeginCombo("Target", targets[next_run_params.target_idx].name, 0)) {
-            for (int i = 0; i < ARRAY_SIZE(targets); i++) {
+            for (u32 i = 0; i < (u32)ARRAY_SIZE(targets); i++) {
                 bool is_selected = (next_run_params.target_idx == i);
                 if (ImGui::Selectable(targets[i].name, is_selected)) {
                     next_run_params.target_idx = i;
@@ -358,7 +357,7 @@ void show_profiler_windows(
             }
             ImGui::EndCombo();
         }
-        ImGui::Text(targets[next_run_params.target_idx].description);
+        ImGui::TextUnformatted(targets[next_run_params.target_idx].description);
         ImGui::PopItemWidth();
     }
 
@@ -623,7 +622,7 @@ void show_profiler_windows(
                 ImGui::OpenPopup("Delete all results");
             }
             ImGui::EndDisabled();
-            if (ImGui::BeginPopup("Delete all results", NULL)) {
+            if (ImGui::BeginPopup("Delete all results", 0)) {
                 if (results->len == 0) {
                     // User already cleared the data in some other way.
                     ImGui::CloseCurrentPopup();
@@ -680,8 +679,8 @@ void show_profiler_windows(
                     ImGui::Text("Sampler: %s", samplers[p->sampler_idx].name);
                     ImGui::Text("Range: (%d, %d, %d)", p->ns.lower, p->ns.stride, p->ns.upper);
                     ImGui::Text("Sample size: %d", p->sample_size);
-                    ImGui::Text("Total units: %d", result->len_units);
-                    ImGui::Text("Seed: %llu", p->seed);
+                    ImGui::Text("Total units: %lu", result->len_units);
+                    ImGui::Text("Seed: %lu", p->seed);
                     /*  // Copy to clipboard -- works, but is very ugly.
                     ImGui::SameLine();
                     if (ImGui::Button(ICON_LC_CLIPBOARD)) {

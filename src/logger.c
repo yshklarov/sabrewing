@@ -135,7 +135,7 @@ void logger_clear(logger* l)
 //
 // Return: True on success; false on failure (e.g., out of memory).
 //
-bool logger_append(logger* l, log_level level, char* message)
+bool logger_append(logger* l, log_level level, char const* message)
 {
     if (l->len == l->cap) {
         return false;
@@ -172,7 +172,7 @@ bool logger_append(logger* l, log_level level, char* message)
 }
 
 // Add a new log entry. Like logger_apend(), but with formatting like printf().
-bool logger_appendf(logger* l, log_level level, char* fmt, ...)
+bool logger_appendf(logger* l, log_level level, char const* fmt, ...)
 {
     char buf[LOGGER_MAX_ENTRYSIZE] = {0};
     va_list vlist;

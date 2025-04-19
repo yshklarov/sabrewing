@@ -64,8 +64,8 @@ typedef struct
     bool seed_from_time;
 
     // Other parameters
-    i32 sampler_idx;
-    i32 target_idx;
+    u32 sampler_idx;
+    u32 target_idx;
     timing_method_id timing;
     bool adjust_for_timer_overhead;
     i32 warmup_ms;
@@ -102,7 +102,6 @@ typedef struct
     f64 n;
     f64 time;  // nanoseconds
     // Tracking this so the input may be re-created at user's request.
-    rand_state rand_state;
 } profiler_result_unit;
 
 // Summary statistics for a batch of test units.
@@ -150,17 +149,17 @@ void result_destroy(profiler_result* result);
 profiler_result result_create(profiler_params params)
 {
     profiler_result result = {0};
-
+    usize arena_len_required = 0;
     u64 len_groups = range_i32_count(params.ns);
-    if ((u64)len_groups * (u64)params.sample_size > (u64)I32_MAX) {
-        // Too many units.
-        goto error_memory;
-    }
     u64 len_units = len_groups * params.sample_size;
 
-    // Reserve local memory for the result..
-    usize arena_len_required = 0;
-    arena_len_required += params.ns.upper * sizeof(params.ns.upper);  // result.input
+    // Check for len_units integer overflow.
+    if ((u64)len_groups * (u64)params.sample_size > (u64)I32_MAX) {
+        goto error_memory;
+    }
+
+    // Reserve local memory for the result.
+    arena_len_required += params.ns.upper * sizeof(params.ns.upper);  // For result.input
     arena_len_required += len_units * sizeof(profiler_result_unit);
     arena_len_required += len_groups * sizeof(profiler_result_group);
     result.local_arena = arena_create(arena_len_required);
@@ -450,7 +449,7 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info* h
             for (u64 i = 0; i < (u64)sample_size; ++i) {
                 arena_tmp scratch = scratch_get(NULL, 0);
                 result.units[n_idx * sample_size + i].n = (f64)n;
-                result.units[n_idx * sample_size + i].rand_state = rand_state_local;
+                result.units[n_idx * sample_size + i].seed = rand_state_local;
 
                 // Generate input data for this test unit. We do this inside the loop, just before
                 // measuring, to encourage the input data to already be in CPU cache when the
