@@ -279,7 +279,6 @@ void show_profiler_windows(
                 if (ImGui::Selectable(samplers[i].name, is_selected)) {
                     next_run_params.sampler_idx = i;
                 }
-                // Set the initial focus when opening the combo (scrolling + keyboard navigation focus)
                 if (is_selected) {
                     ImGui::SetItemDefaultFocus();
                 }
@@ -350,7 +349,6 @@ void show_profiler_windows(
                 if (ImGui::Selectable(targets[i].name, is_selected)) {
                     next_run_params.target_idx = i;
                 }
-                // Set the initial focus when opening the combo (scrolling + keyboard navigation focus)
                 if (is_selected) {
                     ImGui::SetItemDefaultFocus();
                 }
@@ -362,12 +360,26 @@ void show_profiler_windows(
     }
 
     if (ImGui::CollapsingHeader("Verifier##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
-        TextIcon(ICON_LC_LIST_CHECK); ImGui::SameLine(icon_width);
-        ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
-        ImGui::Checkbox("Verify correctness of target output", &next_run_params.verify_correctness);
-        ImGui::SameLine(); HelpMarker(
-                "Verification involves a simple checksum, and may (occasionally) give false "
-                "positives.");
+        ImGui::Checkbox("Verify correctness of target output", &next_run_params.verifier_enabled);
+        if (next_run_params.verifier_enabled) {
+            TextIcon(ICON_LC_LIST_CHECK); ImGui::SameLine(icon_width);
+            ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
+            ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
+            if (ImGui::BeginCombo("Verifier", verifiers[next_run_params.verifier_idx].name, 0)) {
+                for (u32 i = 0; i < (u32)ARRAY_SIZE(verifiers); i++) {
+                    bool is_selected = (next_run_params.verifier_idx == i);
+                    if (ImGui::Selectable(verifiers[i].name, is_selected)) {
+                        next_run_params.verifier_idx = i;
+                    }
+                    if (is_selected) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::TextUnformatted(verifiers[next_run_params.verifier_idx].description);
+            ImGui::PopItemWidth();
+        }
     }
 
     if (ImGui::CollapsingHeader("Profiler options##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -380,7 +392,7 @@ void show_profiler_windows(
                 1.0f, 0, I32_MAX, "%d",
                 ImGuiSliderFlags_AlwaysClamp);
         ImGui::SameLine(); HelpMarker(
-                "Perform sham computations to induce a transition to the boost frequency "
+                "Perform dummy computations to induce a transition to the boost frequency "
                 "before commencing the workload."
                 "\n\n"
                 "Set this to zero if the processor doesn't support dynamic frequency scaling. ");
@@ -693,7 +705,7 @@ void show_profiler_windows(
                     */
                     ImGui::Text("Timing: %s", timing_methods[p->timing].name_short);
                     ImGui::Text("Repetitions: %d", p->repetitions);
-                    ImGui::Text("Verification: %s", p->verify_correctness
+                    ImGui::Text("Verification: %s", p->verifier_enabled
                                 ? (0 == result->verification_reject_count
                                    ? ICON_LC_CHECK " Success"
                                    : ICON_LC_X " Failure")

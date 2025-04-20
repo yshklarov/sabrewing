@@ -66,12 +66,13 @@ typedef struct
     // Other parameters
     u32 sampler_idx;
     u32 target_idx;
+    u32 verifier_idx;
     timing_method_id timing;
     bool adjust_for_timer_overhead;
     i32 warmup_ms;
     //repeat_method repeat;
     i32 repetitions;
-    bool verify_correctness;
+    bool verifier_enabled;
 }  profiler_params;
 
 profiler_params profiler_params_default()
@@ -87,11 +88,12 @@ profiler_params profiler_params_default()
 
     rtn.sampler_idx = 0;
     rtn.target_idx = 0;
+    rtn.verifier_idx = 0;
     rtn.timing = TIMING_RDTSC;
     rtn.adjust_for_timer_overhead = false;
     rtn.warmup_ms = 100;
     rtn.repetitions = 10;
-    rtn.verify_correctness = true;
+    rtn.verifier_enabled = true;
 
     return rtn;
 }
@@ -127,6 +129,7 @@ typedef struct
 
     profiler_params params;
     u32* input;  // Scratch space for storing input to targets.
+    u32* input_clone;  // For verifier.
 
     u64 len_units;
     u64 len_groups;
@@ -154,24 +157,37 @@ profiler_result result_create(profiler_params params)
     u64 len_units = len_groups * params.sample_size;
 
     // Check for len_units integer overflow.
+
     if ((u64)len_groups * (u64)params.sample_size > (u64)I32_MAX) {
         goto error_memory;
     }
 
     // Reserve local memory for the result.
-    arena_len_required += params.ns.upper * sizeof(params.ns.upper);  // For result.input
+
+    // Memory for one or two copies of the input.
+    bool clone_input = params.verifier_enabled;
+    arena_len_required += (1 + (u32)clone_input) * params.ns.upper * sizeof(params.ns.upper);
+    // Result data.
     arena_len_required += len_units * sizeof(profiler_result_unit);
     arena_len_required += len_groups * sizeof(profiler_result_group);
+
     result.local_arena = arena_create(arena_len_required);
     if (!result.local_arena.data) {
         // Failed to allocate memory arena.
         goto error_memory;
     }
 
+    // Initialize the result struct.
+
     static u64 unique_id = 1;
     result.id = unique_id++;
     result.params = params;
     result.input = arena_push_array_zero(&result.local_arena, u32, params.ns.upper);
+    if (clone_input) {
+        result.input_clone = arena_push_array_zero(&result.local_arena, u32, params.ns.upper);
+    } else {
+        result.input_clone = NULL;
+    }
     result.len_units = len_units;
     result.len_groups = len_groups;
     result.units = arena_push_array_zero(&result.local_arena, profiler_result_unit, len_units);
@@ -428,6 +444,7 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info* h
     u64 sample_size = params.sample_size;  // For brevity.
     fn_sampler_sort sampler = samplers[params.sampler_idx].fn;
     fn_target_sort target = targets[params.target_idx].fn;
+    fn_verifier_sort verifier = verifiers[params.verifier_idx].fn;
 
     // The warmup must precede the call to get_timer_overhead().
     waste_cpu_time(params.warmup_ms);
@@ -441,10 +458,19 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info* h
         ? get_timer_overhead(params.timing, 1)
         : 0;
 
+    // The verifier must use its own RNG state, independent from the target, because
+    // target behaviour should be consistent across repetitions, and across distinct runs
+    // regardless of whether a verifier is enabled.
+    rand_state rand_state_verifier = {0};
+    if (params.verifier_enabled) {
+        rand_init_from_time(&rand_state_verifier);
+    }
+
     for (i32 rep = 0; rep < params.repetitions; ++rep) {
         // Each repetition must use the same sample, so we re-seed here.
-        rand_state rand_state_local;
+        rand_state rand_state_local = {0};
         rand_init_from_seed(&rand_state_local, params.seed);
+
         loop_over_range_i32(params.ns, n, n_idx) {
             for (u64 i = 0; i < (u64)sample_size; ++i) {
                 arena_tmp scratch = scratch_get(NULL, 0);
@@ -455,11 +481,8 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info* h
                 // measuring, to encourage the input data to already be in CPU cache when the
                 // critical code begins.
                 sampler(result.input, n, &rand_state_local, scratch.a);
-
-                // Store information about the input, in order to verify correctness later.
-                u64 checksum_before = 0;
-                if (params.verify_correctness) {
-                    checksum_before = verify_checksum(result.input, n);
+                if (params.verifier_enabled) {
+                    memcpy(result.input_clone, result.input, n * sizeof(*result.input));
                 }
 
                 // Measure the execution time of our target function.
@@ -491,14 +514,14 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info* h
                 }
 
                 // Verify correctness of output.
-                if (rep == 0 && params.verify_correctness) {
-                    if (!verify_ordered(result.input, n)) {
+                if (rep == 0 && params.verifier_enabled) {
+                    if (!verifier(
+                                result.input_clone,  // Input
+                                result.input,        // Output (was created in-place by target)
+                                n,
+                                &rand_state_verifier,
+                                scratch.a)) {
                         ++result.verification_reject_count;
-                    } else {
-                        u64 checksum_after = verify_checksum(result.input, n);
-                        if (checksum_before != checksum_after) {
-                            ++result.verification_reject_count;
-                        }
                     }
                 }
                 scratch_release(scratch);
@@ -506,7 +529,7 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info* h
         }
     } // for (rep ...)
 
-    if (params.verify_correctness) {
+    if (params.verifier_enabled) {
         if (result.verification_reject_count == 0) {
             logger_appendf(l, LOG_LEVEL_INFO,
                    "Verification success: Verifier accepted %llu/%llu units.",

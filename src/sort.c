@@ -2,6 +2,7 @@
 
 typedef void (*fn_sampler_sort)(u32* data, u32 n, rand_state* rs, arena* scratch);
 typedef void (*fn_target_sort)(u32* data, u32 n, rand_state* rs, arena* scratch);
+typedef bool (*fn_verifier_sort)(u32* input, u32* output, u32 n, rand_state* rs, arena* scratch);
 
 typedef struct
 {
@@ -17,7 +18,14 @@ typedef struct
     const fn_target_sort fn;
 } target_sort;
 
-/**** Forward declarations ****/
+typedef struct
+{
+    const char* name;
+    const char* description;
+    const fn_verifier_sort fn;
+} verifier_sort;
+
+/**** Forward declarations and function arrays ****/
 
 void sample_uniform(u32*, u32, rand_state*, arena*);
 void sample_ordered(u32*, u32, rand_state*, arena*);
@@ -65,40 +73,15 @@ static const target_sort targets[] =
     {"Miracle sort", "Busy-waits for the list to be sorted.", sort_miracle},
 };
 
-
-/**** Helpers ****/
-
-// Check whether the data is in ascending order.
-bool verify_ordered(u32* data, u32 n)
+bool verify_checksum(u32*, u32*, u32, rand_state*, arena*);
+bool verify_ordered(u32*, u32*, u32, rand_state*, arena*);
+bool verify_all(u32*, u32*, u32, rand_state*, arena*);
+static const verifier_sort verifiers[] =
 {
-    if (n < 2) {
-        return true;
-    }
-    for (u32 k = 0; k < n-1; ++k) {
-        if (data[k] > data[k+1]) {
-            return false;
-        }
-    }
-    return true;
-}
-
-// Return a simple checksum, invariant under permutations of the data. This is a simple
-// commutative hash function.
-u64 verify_checksum(u32* data, u32 n)
-{
-    u32 checksum_xor = 0;
-    u32 checksum_add = 0;
-    for (u32 k = 0; k < n; ++k) {
-        checksum_xor ^= data[k];
-        checksum_add += data[k];
-    }
-    u64 checksum =
-        ((u64)checksum_xor << 32) +
-        (u64)checksum_add;
-    checksum = ROT64(checksum, n % 64) + n;
-    return checksum;
-}
-
+    {"All", "Runs all verifiers in sequence.", verify_all},
+    {"Checksum", "Uses a commutative hash (invariant under permutations).", verify_checksum},
+    {"Ordered", "Checks that the output is in ascending order.", verify_ordered},
+};
 
 /**** Samplers ****/
 
@@ -516,4 +499,49 @@ void sort_miracle(u32* data, u32 n, rand_state* rs, arena* scratch)
             }
         }
     } while (!sorted);
+}
+
+
+/**** Verifiers ****/
+
+bool verify_ordered(u32* input, u32* output, u32 n, rand_state* rs, arena* scratch)
+{
+    (void)rs; (void)scratch; (void)input;
+    if (n < 2) {
+        return true;
+    }
+    for (u32 k = 0; k < n-1; ++k) {
+        if (output[k] > output[k+1]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+u64 verify_checksum_(u32* data, u32 n)
+{
+    u32 checksum_xor = 0;
+    u32 checksum_add = 0;
+    for (u32 k = 0; k < n; ++k) {
+        checksum_xor ^= data[k];
+        checksum_add += data[k];
+    }
+    u64 checksum =
+        ((u64)checksum_xor << 32) +
+        (u64)checksum_add;
+    checksum = ROT64(checksum, n % 64) + n;
+    return checksum;
+}
+
+bool verify_checksum(u32* input, u32* output, u32 n, rand_state* rs, arena* scratch)
+{
+    (void)rs; (void)scratch;
+    return verify_checksum_(input, n) == verify_checksum_(output, n);
+}
+
+bool verify_all(u32* input, u32* output, u32 n, rand_state* rs, arena* scratch)
+{
+    return
+        verify_checksum(input, output, n, rs, scratch) &&
+        verify_ordered(input, output, n, rs, scratch);
 }
