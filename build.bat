@@ -33,7 +33,7 @@ pushd %BUILD_DIR%
 cl /nologo /c /W4 /Zi /FC /utf-8 /std:c++17 /O2 /Gm %INCLUDES% %DEFINES% %SOURCES_IMGUI% %SOURCES_IMPLOT% || goto :error
 
 :: Compile our own code.
-cl /nologo /c /W4 /Zi /FC /utf-8 /std:c++17 %OPTIMIZER_FLAGS% /MP %INCLUDES% %DEFINES% %SOURCES_PROJ% || goto :error
+cl /nologo /c /W4 /Zi /FC /utf-8 /std:c++17 /MT %OPTIMIZER_FLAGS% /MP %INCLUDES% %DEFINES% %SOURCES_PROJ% || goto :error
 
 :: Build resources
 rc /nologo /fo..\%BUILD_DIR%\resources.res ../res/resources.rc

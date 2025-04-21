@@ -67,18 +67,19 @@ typedef struct
     // Other parameters
     u32 sampler_idx;
     u32 target_idx;
+    bool verifier_enabled;
     u32 verifier_idx;
-    timing_method_id timing;
-    bool adjust_for_timer_overhead;
+    bool separate_thread;
     i32 warmup_ms;
     //repeat_method repeat;
     i32 repetitions;
-    bool verifier_enabled;
+    timing_method_id timing;
+    bool adjust_for_timer_overhead;
 
-    // Computed parameters
-    // Invariant: num_groups == range_count(ns).
+    // Computed parameters (invariants):
+    // num_groups == range_count(ns).
     u64 num_groups;
-    // Invariant: num_units == num_groups * sample_size, or 0 in case of integer overflow.
+    // num_units == num_groups * sample_size, or 0 in case of integer overflow.
     u64 num_units;
 }  profiler_params;
 
@@ -100,7 +101,6 @@ typedef struct
     f64 time_median;
 } profiler_result_group;
 
-
 typedef struct
 {
     bool valid;
@@ -111,14 +111,25 @@ typedef struct
     // profiler_result while it's working, and the GUI thread can in the meantime still access the
     // profiler_params.
 
+    // NOTE All members that may be written during the lifetime of the profiler_result are
+    // pointers. This is so that a profiler_result object can be moved by the GUI thread without
+    // invalidating the copy held by the profiler thread.
+
     u32* input;  // Scratch space for storing input to targets.
     u32* input_clone;  // For verifier.
 
     profiler_result_unit* units;
     profiler_result_group* groups;
 
-    u64 verification_reject_count;
+    f32* progress;  // Between 0 and 1.
+    u64* verification_reject_count;
 } profiler_result;
+
+typedef struct
+{
+    HANDLE abort_event;
+    HANDLE result_mutex;
+} profiler_sync;
 
 
 /**** Functions ****/
@@ -150,12 +161,13 @@ profiler_params profiler_params_default()
 
     params.sampler_idx = 0;
     params.target_idx = 0;
+    params.verifier_enabled = true;
     params.verifier_idx = 0;
+    params.separate_thread = true;
+    params.warmup_ms = 100;
+    params.repetitions = 20;
     params.timing = TIMING_RDTSC;
     params.adjust_for_timer_overhead = false;
-    params.warmup_ms = 100;
-    params.repetitions = 10;
-    params.verifier_enabled = true;
 
     profiler_params_recompute_invariants(&params);
 
@@ -186,6 +198,8 @@ profiler_result profiler_result_create(profiler_params params)
     // Result data.
     arena_len_required += params.num_units * sizeof(profiler_result_unit);
     arena_len_required += params.num_groups * sizeof(profiler_result_group);
+    arena_len_required += sizeof(*result.verification_reject_count);
+    arena_len_required += sizeof(*result.progress);
 
     result.local_arena = arena_create(arena_len_required);
     if (!result.local_arena.data) {
@@ -203,8 +217,17 @@ profiler_result profiler_result_create(profiler_params params)
     }
     result.units = arena_push_array_zero(
             &result.local_arena, profiler_result_unit, params.num_units);
+    if (!result.units) goto error_memory;
     result.groups = arena_push_array_zero(
             &result.local_arena, profiler_result_group, params.num_groups);
+    if (!result.groups) goto error_memory;
+
+    result.verification_reject_count = (u64*)arena_push_zero(
+            &result.local_arena, sizeof(*result.verification_reject_count));
+    if (!result.verification_reject_count) goto error_memory;
+    result.progress = (f32*)arena_push_zero(
+            &result.local_arena, sizeof(*result.progress));
+    if (!result.progress) goto error_memory;
 
     result.valid = true;
     return result;
@@ -219,6 +242,7 @@ void profiler_result_destroy(profiler_result* result)
     arena_destroy(&result->local_arena);
     static profiler_result empty_result = {0};
     *result = empty_result;
+    result->valid = false;  // For good measure.
 }
 
 // This function must be called twice (with some time separation) before it will actually set the
@@ -444,8 +468,11 @@ void waste_cpu_time(u32 timeout_ms) {
 }
 
 
-// Writes directly to result.
-void profiler_execute(profiler_params params, profiler_result* result, host_info host)
+void profiler_execute(
+        profiler_params params,
+        profiler_result result,
+        host_info host,
+        profiler_sync sync)
 {
     f64 timer_period_ns = 1.0e9 / (f64)get_timer_frequency(params.timing, &host);
 
@@ -474,28 +501,46 @@ void profiler_execute(profiler_params params, profiler_result* result, host_info
         rand_init_from_time(&rand_state_verifier);
     }
 
+    u64 invocations_completed = 0;
+    u64 invocations_total = params.num_units * params.repetitions;
+
+    bool aborting = false;
     for (i32 rep = 0; rep < params.repetitions; ++rep) {
+        if (aborting) break;
+
         // Each repetition must use the same sample, so we re-seed here.
         rand_state rand_state_local = {0};
         rand_init_from_seed(&rand_state_local, params.seed);
 
         loop_over_range_i32(params.ns, n, n_idx) {
+            if (aborting) break;
+
             for (u64 i = 0; i < (u64)sample_size; ++i) {
+                if (aborting) break;
+
+                if (params.separate_thread) {
+                    if (WaitForSingleObject(sync.abort_event, 0) == WAIT_OBJECT_0) {
+                        aborting = true;
+                        continue;
+                    }
+                    WaitForSingleObject(sync.result_mutex, INFINITE);
+                }
+
                 arena_tmp scratch = scratch_get(NULL, 0);
-                result->units[n_idx * sample_size + i].n = (f64)n;
-                result->units[n_idx * sample_size + i].seed = rand_state_local;
+                result.units[n_idx * sample_size + i].n = (f64)n;
+                result.units[n_idx * sample_size + i].seed = rand_state_local;
 
                 // Generate input data for this test unit. We do this inside the loop, just before
                 // measuring, to encourage the input data to already be in CPU cache when the
                 // critical code begins.
-                sampler(result->input, n, &rand_state_local, scratch.a);
+                sampler(result.input, n, &rand_state_local, scratch.a);
                 if (params.verifier_enabled) {
-                    memcpy(result->input_clone, result->input, n * sizeof(*result->input));
+                    memcpy(result.input_clone, result.input, n * sizeof(*result.input));
                 }
 
                 // Measure the execution time of our target function.
                 u64 timer_initial = get_timer_value(params.timing);
-                target(result->input, n, &rand_state_local, scratch.a);
+                target(result.input, n, &rand_state_local, scratch.a);
                 u64 timer_final = get_timer_value(params.timing);
                 u64 timer_delta = timer_final - timer_initial;
 
@@ -513,51 +558,89 @@ void profiler_execute(profiler_params params, profiler_result* result, host_info
 
                 // Save to result data.
                 if (rep == 0) {
-                    result->units[n_idx * sample_size + i].time = timer_delta_ns;
+                    result.units[n_idx * sample_size + i].time = timer_delta_ns;
                 } else {
-                    f64 best_so_far = result->units[n_idx * sample_size + i].time;
-                    result->units[n_idx * sample_size + i].time = MIN(timer_delta_ns, best_so_far);
+                    f64 best_so_far = result.units[n_idx * sample_size + i].time;
+                    result.units[n_idx * sample_size + i].time = MIN(timer_delta_ns, best_so_far);
                 }
 
                 // Verify correctness of output.
                 if (rep == 0 && params.verifier_enabled) {
                     if (!verifier(
-                                result->input_clone,  // Input
-                                result->input,        // Output (was created in-place by target)
+                                result.input_clone,  // Input
+                                result.input,        // Output (was created in-place by target)
                                 n,
                                 &rand_state_verifier,
                                 scratch.a)) {
-                        ++result->verification_reject_count;
+                        ++(*result.verification_reject_count);
                     }
                 }
                 scratch_release(scratch);
+
+                ++invocations_completed;
+                *result.progress = (f32)invocations_completed / (f32)invocations_total;
+                if (params.separate_thread) {
+                    ReleaseMutex(sync.result_mutex);
+                }
             }
         }
     } // for (rep ...)
 
     // Gather result for plotting.
-    {
+    if (!aborting) {
+        if (params.separate_thread) {
+            WaitForSingleObject(sync.result_mutex, INFINITE);
+        }
+
         arena_tmp scratch = scratch_get(0, 0);
         f64* times = arena_push_array_zero(scratch.a, f64, sample_size);
         loop_over_range_i32(params.ns, n, n_idx) {
-            result->groups[n_idx].n = (f64)n;
-            result->groups[n_idx].time_mean = 0;
+            result.groups[n_idx].n = (f64)n;
+            result.groups[n_idx].time_mean = 0;
             for (u64 i = 0; i < (u64)sample_size; ++i) {
-                times[i] = result->units[n_idx * sample_size + i].time;
-                result->groups[n_idx].time_mean += times[i];
+                times[i] = result.units[n_idx * sample_size + i].time;
+                result.groups[n_idx].time_mean += times[i];
             }
-            result->groups[n_idx].time_mean /= sample_size;
+            result.groups[n_idx].time_mean /= sample_size;
             util_sort(times, (u32)sample_size);
-            result->groups[n_idx].time_min = times[0];
-            result->groups[n_idx].time_max = times[sample_size - 1];
+            result.groups[n_idx].time_min = times[0];
+            result.groups[n_idx].time_max = times[sample_size - 1];
             if (sample_size & 1) {
-                result->groups[n_idx].time_median = times[(sample_size - 1)/2];
+                result.groups[n_idx].time_median = times[(sample_size - 1)/2];
             } else {
-                result->groups[n_idx].time_median =
+                result.groups[n_idx].time_median =
                     (times[(sample_size - 1)/2] +
                      times[(sample_size - 1)/2 + 1]) / 2;
             }
         }
         scratch_release(scratch);
+        if (params.separate_thread) {
+            ReleaseMutex(sync.result_mutex);
+        }
     }
 }
+
+#ifdef _WIN32
+// Windows wrapper for profiler thread.
+
+typedef struct {
+    profiler_params params;
+    profiler_result result;
+    host_info host;
+    profiler_sync sync;
+    HANDLE done_copying_args;
+} profiler_execute_args_struct;
+
+unsigned __stdcall profiler_execute_win32(void* vargs)
+{
+    profiler_execute_args_struct* args = (profiler_execute_args_struct*)vargs;
+    profiler_params params = args->params;
+    profiler_result result = args->result;
+    host_info host = args->host;
+    profiler_sync sync = args->sync;
+    SetEvent(args->done_copying_args);
+    profiler_execute(params, result, host, sync);
+    _endthreadex(0);
+    return 0;
+}
+#endif

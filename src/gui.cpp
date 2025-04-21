@@ -10,6 +10,12 @@
 #include <SDL_opengl.h>
 #endif
 
+#ifdef _WIN32
+#include <process.h>  // _beginthreadex, _endthreadex
+#else
+#include <pthread.h>  // pthread_create(), etc.
+#endif
+
 #include <inttypes.h>
 #include <stdint.h>
 
@@ -40,6 +46,7 @@ typedef struct
     bool visible_data_median;
     bool visible_data_bounds;
     bool auto_zoom;
+    bool live_view;
     bool log_show_timestamps;
 } gui_config;
 
@@ -56,16 +63,24 @@ typedef enum
 {
     PROFRUN_PENDING,
     PROFRUN_RUNNING,
+    PROFRUN_ABORT_REQUESTED,
+    PROFRUN_ABORTING,
     PROFRUN_DONE_SUCCESS,
     PROFRUN_DONE_FAILURE,
+    PROFRUN_DONE_ABORTED,
     PROFRUN_STATE_MAX,
 } profrun_state;
 
 typedef struct
 {
     u64 id;  // 1-indexed; id==0 indicates stub (uninitialized, or already destroyed).
-    profrun_state state;  // Once PROFRUN_COMPLETE, result is safe to read.
-    u32* thread_handle;
+    profrun_state state;  // Once PROFRUN_DONE_..., result is safe to read.
+    #ifdef _WIN32
+    HANDLE thread_handle;
+    #else
+    pthread_t thread_handle;
+    #endif
+    profiler_sync sync;
     profiler_params params;
     profiler_result result;  // Written directly by profiler thread: Beware data races.
     bool intent_visible;
@@ -76,10 +91,89 @@ typedef_darray(profrun);
 
 /****  Functions ****/
 
-bool profrun_actually_visible(profrun* run) {
+bool profrun_busy(profrun* run)
+{
     return
-        (run->state == PROFRUN_DONE_SUCCESS) &&
-        run->intent_visible;
+        run->state == PROFRUN_RUNNING ||
+        run->state == PROFRUN_ABORT_REQUESTED ||
+        run->state == PROFRUN_ABORTING;
+}
+
+bool profrun_done(profrun* run)
+{
+    return
+        run->state == PROFRUN_DONE_SUCCESS ||
+        run->state == PROFRUN_DONE_FAILURE ||
+        run->state == PROFRUN_DONE_ABORTED;
+}
+
+// Deletes the profrun immediately if possible, or sets the thread to abort if it's running.
+// Return true if deleted.
+bool profrun_try_delete(logger* l, darray_profrun* runs, usize idx)
+{
+    bool deleted = false;
+    switch (runs->data[idx].state) {
+    case PROFRUN_RUNNING: {
+        runs->data[idx].state = PROFRUN_ABORT_REQUESTED;
+    } break;
+    case PROFRUN_ABORT_REQUESTED:
+    case PROFRUN_ABORTING: {
+        // Still waiting for thread to abort; do nothing.
+    } break;
+    default: {
+        // No worker thread is running, so it's safe to destroy it immediately.
+        logger_appendf(l, LOG_LEVEL_DEBUG,
+                       "(ID %" PRIu64 ") Destroying profiler run.",
+                       runs->data[idx].id);
+        profiler_result_destroy(&(runs->data[idx].result));
+        darray_profrun_remove(runs, idx);
+        deleted = true;
+    }
+    }
+    return deleted;
+}
+
+// Return true if the results for the given run should be plotted.
+bool profrun_actually_visible(profrun* run, bool live_view)
+{
+    bool data_available =
+        live_view ||
+        run->state == PROFRUN_DONE_SUCCESS ||
+        run->state == PROFRUN_DONE_FAILURE;
+    return data_available && run->intent_visible;
+}
+
+void profiler_worker_finish(logger* l, profrun* run)
+{
+    if (run->state == PROFRUN_ABORTING) {
+        run->state = PROFRUN_DONE_ABORTED;
+    } else if (!run->result.valid){
+        logger_append(l, LOG_LEVEL_ERROR, "Profiler failed to run.");
+        run->state = PROFRUN_DONE_FAILURE;
+    } else {
+        if (run->params.verifier_enabled) {
+            if (*(run->result.verification_reject_count) == 0) {
+                logger_appendf(
+                        l, LOG_LEVEL_INFO,
+                        "(ID %" PRIu64 ") Verification success: Verifier accepted "
+                        "%" PRIu64 "/%" PRIu64 " units.",
+                        run->id,
+                        run->params.num_units - *(run->result.verification_reject_count),
+                        run->params.num_units);
+            } else {
+                logger_appendf(
+                        l, LOG_LEVEL_INFO,
+                        "(ID %" PRIu64 ") Verification failure: Verifier accepted "
+                        "%" PRIu64 "/%" PRIu64 " units.",
+                        run->id,
+                        run->params.num_units - *(run->result.verification_reject_count),
+                        run->params.num_units);
+            }
+        }
+        logger_appendf(l, LOG_LEVEL_INFO, "(ID %" PRIu64 ") Completed profiler run.", run->id);
+        run->fresh = true;
+        run->state = PROFRUN_DONE_SUCCESS;
+    }
 }
 
 void manage_profiler_workers(
@@ -87,51 +181,104 @@ void manage_profiler_workers(
         host_info* host,
         darray_profrun* runs)
 {
+    // Only one worker thread at a time for now, because memory (scratch) arenas are not
+    // thread-safe.
     u32 workers_available = 1;
+    bool state_changed_this_frame = false;
+
+    // Take care of already-running worker(s).
     for (usize i = 0; i < runs->len; ++i) {
-        if (runs->data[i].state == PROFRUN_RUNNING) {
+        profrun* run = &runs->data[i];
+        if (run->state == PROFRUN_ABORT_REQUESTED) {
+            assertm(run->params.separate_thread, "Worker shouldn't have its own thread.");
+            logger_appendf(l, LOG_LEVEL_DEBUG,
+                           "(ID %" PRIu64 ") Profiler abort requested.", run->id);
+            SetEvent(run->sync.abort_event);
+            run->state = PROFRUN_ABORTING;
+            state_changed_this_frame = true;
+        }
+        if (profrun_busy(run)) {
+            assertm(run->params.separate_thread, "Worker shouldn't have its own thread.");
             assertm(workers_available > 0, "Too many profiler workers running.");
-            // TODO Check whether the thread is complete.
-            --workers_available;
+            bool run_completed = false;
+            #ifdef _WIN32
+            // Check without blocking.
+            run_completed = WaitForSingleObject(run->thread_handle, 0) == WAIT_OBJECT_0;
+            #endif
+            if (!run_completed) {
+                --workers_available;
+            } else {
+                #ifdef _WIN32
+                CloseHandle(run->thread_handle);
+                CloseHandle(run->sync.abort_event);
+                CloseHandle(run->sync.result_mutex);
+                #endif
+                profiler_worker_finish(l, run);
+                if (run->state == PROFRUN_DONE_ABORTED) {
+                    if (profrun_try_delete(l, runs, i)) {
+                        --i;
+                    }
+                }
+                state_changed_this_frame = true;
+            }
         }
     }
 
-    for (usize i = 0; (i < runs->len) && workers_available; ++i) {
+    // Begin new worker(s).
+    for (usize i = 0; i < runs->len; ++i) {
+        if (!workers_available) {
+            break;
+        }
         profrun* run = &runs->data[i];
         if (run->state == PROFRUN_PENDING) {
-            logger_appendf(l, LOG_LEVEL_INFO, "Starting profiler run id:%d.", run->id);
-
-            // TODO create thread: run->profiler_thread = ...
-            run->state = PROFRUN_RUNNING;
-            // TODO run thread
-            //_beginthreadex(...);
-            profiler_execute(run->params, &run->result, *host);
-            --workers_available;
-            // TODO Join the thread here, for now
-            ++workers_available;
-
-            if (!run->result.valid){
-                run->state = PROFRUN_DONE_FAILURE;
-                logger_append(l, LOG_LEVEL_ERROR, "Profiler failed to run.");
-            } else {
-                run->state = PROFRUN_DONE_SUCCESS;
-                if (run->params.verifier_enabled) {
-                    if (run->result.verification_reject_count == 0) {
-                        logger_appendf(l, LOG_LEVEL_INFO,
-                                       "Verification success: Verifier accepted "
-                                       "%" PRIu64 "/%" PRIu64 " units.",
-                                       run->params.num_units - run->result.verification_reject_count,
-                                       run->params.num_units);
-                    } else {
-                        logger_appendf(l, LOG_LEVEL_INFO,
-                                       "Verification failure: Verifier accepted "
-                                       "%" PRIu64 "/%" PRIu64 " units.",
-                                       run->params.num_units - run->result.verification_reject_count,
-                                       run->params.num_units);
-                    }
+            if (!run->params.separate_thread && state_changed_this_frame) {
+                // Wait for one GUI frame to update the GUI before blocking the thread. This
+                // is so that the results list and graph get a chance to update.
+                // Do not begin any later runs yet, either (we always go in order queued).
+                break;
+            }
+            logger_appendf(l, LOG_LEVEL_INFO,
+                           "(ID %" PRIu64 ") Starting profiler run.", run->id);
+            if (run->params.separate_thread) {
+                // Create the worker thread.
+                #ifdef _WIN32
+                run->sync.abort_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+                run->sync.result_mutex = CreateMutex(NULL, FALSE, NULL);
+                // Don't leave this stack frame until the child thread is done with it.
+                HANDLE done_copying_args = CreateEvent(NULL, TRUE, FALSE, NULL);
+                profiler_execute_args_struct profiler_args = {
+                    run->params,
+                    run->result,
+                    *host,
+                    run->sync,
+                    done_copying_args
+                };
+                run->thread_handle = (HANDLE)_beginthreadex(
+                        NULL, 0, profiler_execute_win32, &profiler_args, CREATE_SUSPENDED, NULL);
+                if (run->thread_handle == 0) {
+                    logger_appendf(l, LOG_LEVEL_ERROR,
+                                   "(ID %" PRIu64 ") Failed to start profiler thread.", run->id);
+                    run->state = PROFRUN_DONE_FAILURE;
+                } else {
+                    // Worker threads are highest priority; the GUI can wait.
+                    SetThreadPriority(run->thread_handle, THREAD_PRIORITY_TIME_CRITICAL);
+                    ResumeThread(run->thread_handle);
+                    // Wait until it's safe for profiler_args to go out of scope.
+                    WaitForSingleObject(profiler_args.done_copying_args, INFINITE);
+                    --workers_available;
+                    run->state = PROFRUN_RUNNING;
                 }
-                logger_appendf(l, LOG_LEVEL_INFO, "Completed profiler run id:%d.", run->id);
-                run->fresh = true;
+                CloseHandle(profiler_args.done_copying_args);
+                profiler_args.done_copying_args = 0;
+                #else
+                assertm(false, "Unimplemented: Threads on Linux.");
+                #endif
+            } else {
+                // User requested to use GUI thread for the profiler.
+                run->state = PROFRUN_RUNNING;
+                // This will block until the run is complete.
+                profiler_execute(run->params, run->result, *host, run->sync);
+                profiler_worker_finish(l, run);
             }
         }
     }
@@ -350,7 +497,6 @@ void show_profiler_windows(
     ImGui::BeginChild("ProfilerParamsConfigurationChild",
                       ImVec2(0, -GetBigButtonHeightWithSpacing()));
     {
-
     if (ImGui::CollapsingHeader("Sampler##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
         TextIcon(ICON_LC_DICES); ImGui::SameLine(icon_width);
         ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
@@ -504,6 +650,12 @@ void show_profiler_windows(
         ImGui::PopItemWidth();
         ImGui::Separator();
 
+        ImGui::Checkbox("Run in separate thread", &next_run_params.separate_thread);
+        ImGui::SameLine(); HelpMarker(
+                "Disabling this option will make the results more repeatable, but the GUI will "
+                "stop responding until the profiler is finished.");
+        ImGui::Separator();
+
         TextIcon(ICON_LC_TIMER); ImGui::SameLine(icon_width);
         ImGui::Text("Timing method:");
         ImGui::SameLine(); HelpMarker(
@@ -648,12 +800,14 @@ void show_profiler_windows(
                 profrun* run = darray_profrun_push(a, runs);
                 run->id = unique_run_id++;
                 run->state = PROFRUN_PENDING;
+                run->sync = {0};
                 run->thread_handle = NULL;
                 run->params = next_run_params;
                 run->result = result_tmp;
                 run->intent_visible = true;
                 run->fresh = false;
-                logger_appendf(l, LOG_LEVEL_DEBUG, "Queued profiler run id:%d.", run->id);
+                logger_appendf(l, LOG_LEVEL_DEBUG,
+                               "(ID %" PRIu64 ") Queued profiler run.", run->id);
             }
         }
     }
@@ -667,7 +821,7 @@ void show_profiler_windows(
     static bool visible_display_options = true;
     // TODO Ewww! Do layout calculations better.
     ImGui::BeginChild("ProfilerResultsChild",
-                      ImVec2(0, -(1 + (visible_display_options ? 5 : 0)) *
+                      ImVec2(0, -(1 + (visible_display_options ? 6 : 0)) *
                              ImGui::GetFrameHeightWithSpacing()));
     {
         if (ImGui::BeginTable("ResultsList", 3, ImGuiTableFlags_ScrollY)) {
@@ -741,12 +895,15 @@ void show_profiler_windows(
                 ImVec2 popup_button_size = ImVec2(ImGui::GetFontSize() * 3.5f, 0.f);
                 ImGui::Text("Delete all results?");
                 if (ImGui::Button("Confirm", popup_button_size)) {
-                    logger_appendf(l, LOG_LEVEL_DEBUG, "Destroying %d profiler run%s.", runs->len,
+                    logger_appendf(l, LOG_LEVEL_DEBUG,
+                                   "User requested deletion of all %d profiler run%s.",
+                                   runs->len,
                                    (runs->len == 1) ? "" : "s");
                     for (usize i = 0; i < runs->len; ++i) {
-                        profiler_result_destroy(&(runs->data[i].result));
+                        if (profrun_try_delete(l, runs, i)) {
+                            --i;
+                        }
                     }
-                    darray_profrun_clear(runs);
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Cancel", popup_button_size)) {
@@ -762,9 +919,6 @@ void show_profiler_windows(
             for (usize i = 0; i < runs->len; ++i) {
                 profrun* run = &(runs->data[i]);
                 profiler_result* result = &run->result;
-                bool result_done =
-                    run->state == PROFRUN_DONE_SUCCESS ||
-                    run->state == PROFRUN_DONE_FAILURE;
                 profiler_params* p = &run->params;
 
                 // The ImGui ID must be tied to the actual result, because the runs may get
@@ -787,8 +941,12 @@ void show_profiler_windows(
                 case PROFRUN_RUNNING: {
                     cell_bg_color = (ImU32)0x6000FF00;
                 } break;
+                case PROFRUN_ABORT_REQUESTED:
+                case PROFRUN_ABORTING: {
+                    cell_bg_color = (ImU32)0x6000A0FF;
+                } break;
                 case PROFRUN_DONE_SUCCESS: {
-                    if (result->verification_reject_count == 0) {
+                    if (*(result->verification_reject_count) == 0) {
                         cell_bg_color = (ImU32)ImGuiCol_Header;
                     } else {
                         cell_bg_color = (ImU32)0x600000FF;
@@ -804,11 +962,21 @@ void show_profiler_windows(
                 }  // switch (run->state)
                 ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, cell_bg_color);
 
-                if (ImGui::TreeNodeEx(result_name,
+                bool tree_node_open  = ImGui::TreeNodeEx(result_name,
                                       ImGuiTreeNodeFlags_SpanAllColumns |
                                       ImGuiTreeNodeFlags_SpanAvailWidth |
                                       ImGuiTreeNodeFlags_AllowOverlap
-                        )) {
+                    );
+                if (profrun_busy(run)) {
+                    // Show progress. NOTE This is a memory-unsafe read (may be torn), but we'll
+                    // leve it as is because the multithreading is going to be torn out anyway (to
+                    // be replaced by multiple processes).
+                    ImGui::SameLine();
+                    ImGui::ProgressBar(*(result->progress), ImVec2(-1.0f, 0.0f));
+                }
+
+
+                if (tree_node_open) {
                     if (ImGui::Button(ICON_LC_COPY " Again")) {
                         next_run_params = *p;
                     }
@@ -834,8 +1002,8 @@ void show_profiler_windows(
                     ImGui::Text("Repetitions: %d", p->repetitions);
                     ImGui::Text("Verification: %s",
                                 p->verifier_enabled
-                                ? (result_done
-                                   ? (0 == result->verification_reject_count
+                                ? (profrun_done(run)  // Avoid race condition.
+                                   ? (0 == *(result->verification_reject_count)
                                       ? ICON_LC_CHECK " Success"
                                       : ICON_LC_X " Failure")
                                    : "Pending")
@@ -844,9 +1012,7 @@ void show_profiler_windows(
                     //    - Total memory used by this result (i.e., size of local_arena)
                     //    - Timestamp: Began, finished
                     //    - Total time elapsed
-                    //    - Profiling progress bar, with "pause"/"continue" button; hide runs by
-                    //      default while profiling, but allow user to manually select checkbox to
-                    //      view live results in graph as they arrive.
+                    //    - Profiling progress bar
                     ImGui::TreePop();
                 }
                 ImGui::TableSetColumnIndex(2);
@@ -862,10 +1028,7 @@ void show_profiler_windows(
                 ImGui::PopID();
             }  // for each run
             if (delete_requested) {
-                logger_appendf(l, LOG_LEVEL_DEBUG,
-                               "Destroying profiler run id:%d.", runs->data[delete_idx].id);
-                profiler_result_destroy(&(runs->data[delete_idx].result));
-                darray_profrun_remove(runs, delete_idx);
+                profrun_try_delete(l, runs, delete_idx);
             }
             ImGui::EndTable();
         }  // table
@@ -887,6 +1050,11 @@ void show_profiler_windows(
         ImGui::Checkbox("Display median", &guiconf->visible_data_median);
         ImGui::Checkbox("Display mean", &guiconf->visible_data_mean);
         ImGui::Checkbox("Auto-zoom", &guiconf->auto_zoom);
+        ImGui::Checkbox("Live view", &guiconf->live_view);
+        ImGui::SameLine();
+        HelpMarker("Watch the results as they come in. This may decrease performance, and is "
+                   "not memory safe.\n\nNot recommended.");
+
         bool visible_any_now =
             guiconf->visible_data_individual ||
             guiconf->visible_data_mean ||
@@ -895,7 +1063,7 @@ void show_profiler_windows(
         if (!visible_any_prev && visible_any_now && guiconf->auto_zoom) {
             // Bugfix: If user made new data while nothing was visible, we must re-adjust axes.
             for (usize i = 0; i < runs->len; ++i) {
-                if (profrun_actually_visible(&(runs->data[i]))) {
+                if (profrun_actually_visible(&(runs->data[i]), guiconf->live_view)) {
                     ImPlot::SetNextAxesToFit();
                     break;
                 }
@@ -915,7 +1083,7 @@ void show_profiler_windows(
     for (usize i = 0; i < runs->len; ++i) {
         profrun* run = &runs->data[i];
         if (run->fresh) {
-            if (profrun_actually_visible(run) && guiconf->auto_zoom) {
+            if (profrun_actually_visible(run, guiconf->live_view) && guiconf->auto_zoom) {
                 // Set plot axes to fit the bounds of the new data.
                 ImPlot::SetNextAxesToFit();
             }
@@ -943,7 +1111,9 @@ void show_profiler_windows(
             profrun* run = &(runs->data[i]);
             profiler_params* params = &run->params;
             profiler_result* result = &run->result;
-            if (!profrun_actually_visible(run)) {
+            if (!profrun_actually_visible(run, guiconf->live_view)) {
+                // If we keep going here, the user will see a "live" view of the results as
+                // the profiler thread writes them; however, this is not memory-safe.
                 continue;
             }
 
@@ -1112,6 +1282,9 @@ int main(int, char**)
     SDL_GL_MakeCurrent(window, gl_context);
     SDL_GL_SetSwapInterval(1);  // Enable vsync
 
+    // We care most about the profiler thread; the GUI thread should not interfere.
+    SDL_SetThreadPriority(SDL_THREAD_PRIORITY_LOW);
+
     // Set up Dear ImGui context.
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -1143,6 +1316,7 @@ int main(int, char**)
     guiconf.visible_data_bounds = true;
     guiconf.log_show_timestamps = true;
     guiconf.auto_zoom = true;
+    guiconf.live_view = false;
 
     // GUI styling/theme
     gui_style guistyle;

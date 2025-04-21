@@ -601,7 +601,10 @@ void arena_tmp_end(arena_tmp tmp)
 //
 // Returns a stub if there are no available scratch arenas.
 //
-// Source: https://www.rfleury.com/p/untangling-lifetimes-the-arena-allocator)
+// Warning: Scratch arenas are not thread-safe! Do not request a scratch arena from two
+// threads simultaneously.
+//
+// Source: https://www.rfleury.com/p/untangling-lifetimes-the-arena-allocator
 //
 #define MAX_SCRATCH_ARENAS 2
 #define SCRATCH_ARENA_SIZE (8 * 1024 * 1024)
@@ -714,7 +717,7 @@ bool arena_pop(arena* a, usize len, byte* obj)
 /* A dynamic array. */                                                  \
 typedef struct                                                          \
 {                                                                       \
-        T* data;                                                        \
+    T* data;                                                            \
     usize len;  /* Number of elements. */                               \
     usize cap;  /* Number of elements. */                               \
 } darray_##T;                                                           \
