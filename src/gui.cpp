@@ -10,6 +10,7 @@
 #include <SDL_opengl.h>
 #endif
 
+#include <inttypes.h>
 #include <stdint.h>
 
 #include "Lucide_Symbols.h"
@@ -51,8 +52,90 @@ typedef struct
     u8 font_size_max;
 } gui_style;
 
+typedef enum
+{
+    PROFRUN_PENDING,
+    PROFRUN_RUNNING,
+    PROFRUN_DONE_SUCCESS,
+    PROFRUN_DONE_FAILURE,
+    PROFRUN_STATE_MAX,
+} profrun_state;
+
+typedef struct
+{
+    u64 id;  // 1-indexed; id==0 indicates stub (uninitialized, or already destroyed).
+    profrun_state state;  // Once PROFRUN_COMPLETE, result is safe to read.
+    u32* thread_handle;
+    profiler_params params;
+    profiler_result result;  // Written directly by profiler thread: Beware data races.
+    bool intent_visible;
+    bool fresh;
+} profrun;
+typedef_darray(profrun);
+
 
 /****  Functions ****/
+
+bool profrun_actually_visible(profrun* run) {
+    return
+        (run->state == PROFRUN_DONE_SUCCESS) &&
+        run->intent_visible;
+}
+
+void manage_profiler_workers(
+        logger* l,
+        host_info* host,
+        darray_profrun* runs)
+{
+    u32 workers_available = 1;
+    for (usize i = 0; i < runs->len; ++i) {
+        if (runs->data[i].state == PROFRUN_RUNNING) {
+            assertm(workers_available > 0, "Too many profiler workers running.");
+            // TODO Check whether the thread is complete.
+            --workers_available;
+        }
+    }
+
+    for (usize i = 0; (i < runs->len) && workers_available; ++i) {
+        profrun* run = &runs->data[i];
+        if (run->state == PROFRUN_PENDING) {
+            logger_appendf(l, LOG_LEVEL_INFO, "Starting profiler run id:%d.", run->id);
+
+            // TODO create thread: run->profiler_thread = ...
+            run->state = PROFRUN_RUNNING;
+            // TODO run thread
+            //_beginthreadex(...);
+            profiler_execute(run->params, &run->result, *host);
+            --workers_available;
+            // TODO Join the thread here, for now
+            ++workers_available;
+
+            if (!run->result.valid){
+                run->state = PROFRUN_DONE_FAILURE;
+                logger_append(l, LOG_LEVEL_ERROR, "Profiler failed to run.");
+            } else {
+                run->state = PROFRUN_DONE_SUCCESS;
+                if (run->params.verifier_enabled) {
+                    if (run->result.verification_reject_count == 0) {
+                        logger_appendf(l, LOG_LEVEL_INFO,
+                                       "Verification success: Verifier accepted "
+                                       "%" PRIu64 "/%" PRIu64 " units.",
+                                       run->params.num_units - run->result.verification_reject_count,
+                                       run->params.num_units);
+                    } else {
+                        logger_appendf(l, LOG_LEVEL_INFO,
+                                       "Verification failure: Verifier accepted "
+                                       "%" PRIu64 "/%" PRIu64 " units.",
+                                       run->params.num_units - run->result.verification_reject_count,
+                                       run->params.num_units);
+                    }
+                }
+                logger_appendf(l, LOG_LEVEL_INFO, "Completed profiler run id:%d.", run->id);
+                run->fresh = true;
+            }
+        }
+    }
+}
 
 void set_imgui_style(logger* l, ImGuiIO* io, bool is_dark, u8 font_size)
 {
@@ -181,9 +264,9 @@ static f32 GetBigButtonHeightWithSpacing()
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(
                                 1.2f * ImGui::GetFrameHeight(),
                                 1.0f * ImGui::GetFrameHeight()));
-    f32 result = ImGui::GetFrameHeightWithSpacing();
+    f32 height = ImGui::GetFrameHeightWithSpacing();
     ImGui::PopStyleVar();
-    return result;
+    return height;
 }
 
 /*bool RightAlignedButton(char const * label) {
@@ -234,8 +317,6 @@ void show_log_window(
                           ImVec2(0, 0 /*-ImGui::GetFrameHeightWithSpacing() * 1 */),
                           ImGuiChildFlags_None,
                           ImGuiWindowFlags_HorizontalScrollbar)) {
-        // ImGui is very slow at displaying >10,000 separate Text widgets.
-        // TODO Pagify ("next/previous page" buttons).
         #define LOG_WINDOW_MAX_ENTRIES_PER_PAGE 1000
         for (u32 i = 0; i < l->len; ++i) {
             ImGui::TextUnformatted(
@@ -258,7 +339,7 @@ void show_profiler_windows(
         logger* l,
         arena* a,
         host_info* host,
-        darray_profiler_result* results)
+        darray_profrun* runs)
 {
     ImGui::Begin("Profiler" /*, visible*/);
 
@@ -299,6 +380,7 @@ void show_profiler_windows(
                     20, 0, I32_MAX, "Min: %d", "Max: %d")) {
             // Workarounds for imgui input bugs.
             range_i32_repair(&next_run_params.ns);
+            profiler_params_recompute_invariants(&next_run_params);
         }
         if (ImGui::DragInt(
                     "Array size (n) stride",
@@ -307,19 +389,20 @@ void show_profiler_windows(
                     ImGuiSliderFlags_AlwaysClamp)) {
             // I don't trust the ImGui widgets to be bug-free.
             next_run_params.ns.stride = MAX(1, next_run_params.ns.stride);
+            profiler_params_recompute_invariants(&next_run_params);
         }
-        ImGui::DragInt(
-                "Sample size for each n",
-                &next_run_params.sample_size,
-                1, 1, I32_MAX, "%d",
-                ImGuiSliderFlags_AlwaysClamp);
-        i32 sampler_n_count = range_i32_count(next_run_params.ns);
+        if (ImGui::DragInt(
+                    "Sample size for each n",
+                    &next_run_params.sample_size,
+                    1, 1, I32_MAX, "%d",
+                    ImGuiSliderFlags_AlwaysClamp)) {
+            profiler_params_recompute_invariants(&next_run_params);
+        }
         ImGui::Text(
-                u8"The sampler will generate %d × %d = %lu test units.",
-                sampler_n_count,
+                u8"The sampler will generate %" PRIu64 " × %d = %" PRIu64 " test units.",
+                next_run_params.num_groups,
                 next_run_params.sample_size,
-                // TODO Deal correctly with integer overflow: do not simply crash...
-                (u64)sampler_n_count * (u64)next_run_params.sample_size);
+                next_run_params.num_units);
         //ImGui::Text("Input to algorithm: Shuffled array of u32 of length n.");
         ImGui::PopItemWidth();
 
@@ -333,7 +416,7 @@ void show_profiler_windows(
         }
         ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
         ImGui::InputScalar(
-                "RNG seed", ImGuiDataType_U64, &next_run_params.seed, NULL, NULL, "%llu");
+                "RNG seed", ImGuiDataType_U64, &next_run_params.seed, NULL, NULL, "%" PRIu64);
         ImGui::EndDisabled();
         ImGui::Checkbox("Seed with current time", &next_run_params.seed_from_time);
         ImGui::PopItemWidth();
@@ -412,14 +495,11 @@ void show_profiler_windows(
                 "poor repeatability across identical test runs. Decrease this parameter if you "
                 "are timing a slower algorithm and don't need good repeatability. ");
 
-        i32 sampler_n_count = range_i32_count(next_run_params.ns);
-        // TODO Deal with integer overflow: do not simply crash...
-        i32 sampler_test_unit_count = sampler_n_count * next_run_params.sample_size;
         ImGui::Text(
-                u8"The target will be invoked %d × %d = %d times.",
-                sampler_test_unit_count,
+                u8"The target will be invoked %" PRIu64 " × %d = %" PRIu64 " times.",
+                next_run_params.num_units,
                 next_run_params.repetitions,
-                sampler_test_unit_count * next_run_params.repetitions);
+                (u64)next_run_params.num_units * (u64)next_run_params.repetitions);
 
         ImGui::PopItemWidth();
         ImGui::Separator();
@@ -555,14 +635,25 @@ void show_profiler_windows(
     bool go_requested = ImGui::Button("BEGIN  " ICON_LC_WIND);
     PopBigButton();
     if (go_requested) {
-        profiler_result result = profiler_execute(l, next_run_params, host);
-        if (!result.id){
-            logger_append(l, LOG_LEVEL_ERROR, "Profiler failed to run.");
+        if (!profiler_params_valid(next_run_params)) {
+            logger_append(l, LOG_LEVEL_ERROR, "Cannot run profiler: Invalid parameters.");
         } else {
-            *darray_profiler_result_push(a, results) = result;
-            if (guiconf->auto_zoom) {
-                // Set plot axes to fit the bounds of the new data.
-                ImPlot::SetNextAxesToFit();
+            // Allocate space for the new run's results.
+            profiler_result result_tmp = profiler_result_create(next_run_params);
+            if (!result_tmp.valid) {
+                logger_append(l, LOG_LEVEL_ERROR,
+                              "Failed to allocate memory for new profiler run.");
+            } else {
+                static u64 unique_run_id = 1;
+                profrun* run = darray_profrun_push(a, runs);
+                run->id = unique_run_id++;
+                run->state = PROFRUN_PENDING;
+                run->thread_handle = NULL;
+                run->params = next_run_params;
+                run->result = result_tmp;
+                run->intent_visible = true;
+                run->fresh = false;
+                logger_appendf(l, LOG_LEVEL_DEBUG, "Queued profiler run id:%d.", run->id);
             }
         }
     }
@@ -594,61 +685,68 @@ void show_profiler_windows(
             // No header behind checkbox/icons, because that would be ugly.
             //ImGui::TableHeader("##Visible");
             //ImGui::SameLine(0,0);
-            usize num_results_visible = 0;
+            usize num_runs_intent_visible = 0;
             // Recomputing in every frame; yuck!
-            for (usize i = 0; i < results->len; ++i) {
-                if (results->data[i].gui.plot_visible) {
-                    ++num_results_visible;
+            for (usize i = 0; i < runs->len; ++i) {
+                if (runs->data[i].intent_visible) {
+                    ++num_runs_intent_visible;
                 }
             }
-            bool all_visible = (num_results_visible == results->len) && (results->len > 0);
+            bool all_intent_visible = num_runs_intent_visible == runs->len;
             // TODO Find, or build, a three-way checkbox with a "partial" setting.
-            ImGui::BeginDisabled(results->len == 0);
+            ImGui::BeginDisabled(runs->len == 0);
             // Match the size/shape of the checkboxes below.
             f32 checkbox_size = ImGui::GetFrameHeight();
             if (ImGui::Button(ICON_LC_CHART_SPLINE "##AllResultsVisibility",
                               ImVec2(checkbox_size, checkbox_size))) {
-                for (usize i = 0; i < results->len; ++i) {
-                    results->data[i].gui.plot_visible = !all_visible;
+                for (usize i = 0; i < runs->len; ++i) {
+                    runs->data[i].intent_visible = !all_intent_visible;
                 }
             }
             ImGui::EndDisabled();
 
             ImGui::TableSetColumnIndex(1);
-            // The button is the simplest element with the precisely correct dimensions and
-            // background color. We push colors instead of disabling the button, because we don't
-            // want greyed-out text.
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_Button));
+
+            // NOTE Aesthetically, it's not clear which element is best for the header. A button has
+            // precisely the correct height to line up with the elements in the neighboring columns
+            // (we push colors instead of disabling the button, because we don't want greyed-out
+            // text). On the other hand, when the very first result has a colored background, a
+            // button in the header looks weird. But TableSetBgColor(ImGuiTableBgTarget_CellBg, ...)
+            // is also not ideal, because the cell is slightly taller than the buttons in the
+            // adjacent column headers. Another, related problem: the TreeNode mouseover visual
+            // effect is smaller than the ImGuiTableBgTarget_CellBg rectangle.
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg,
+                                   ImGui::GetColorU32(ImGuiCol_TableHeaderBg));
+            ImGui::Text("Result Details");
+            /*ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_Button));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4(ImGuiCol_Button));
             if (ImGui::Button("Result Details##ResultDetailsHeader",
                               ImVec2(-1, 0))) {
-                // We could sort the results list here, perhaps.
+                // We could sort `runs` here, perhaps.
             }
-            ImGui::PopStyleColor(2);
+            ImGui::PopStyleColor(2);*/
 
             ImGui::TableSetColumnIndex(2);
-            //ImGui::TableHeader("##Delete");
-            //ImGui::SameLine(0,0);
-            ImGui::BeginDisabled(results->len == 0);
+
+            ImGui::BeginDisabled(runs->len == 0);
             if (ImGui::Button(ICON_LC_TRASH_2)) {
                 ImGui::OpenPopup("Delete all results");
             }
             ImGui::EndDisabled();
             if (ImGui::BeginPopup("Delete all results", 0)) {
-                if (results->len == 0) {
+                if (runs->len == 0) {
                     // User already cleared the data in some other way.
                     ImGui::CloseCurrentPopup();
                 }
                 ImVec2 popup_button_size = ImVec2(ImGui::GetFontSize() * 3.5f, 0.f);
                 ImGui::Text("Delete all results?");
                 if (ImGui::Button("Confirm", popup_button_size)) {
-                    logger_appendf(l, LOG_LEVEL_DEBUG, "Destroying %d %s.", results->len,
-                                   (results->len == 1) ? "result" : "results");
-                    for (usize i = 0; i < results->len; ++i) {
-                        result_destroy(&(results->data[i]));
+                    logger_appendf(l, LOG_LEVEL_DEBUG, "Destroying %d profiler run%s.", runs->len,
+                                   (runs->len == 1) ? "" : "s");
+                    for (usize i = 0; i < runs->len; ++i) {
+                        profiler_result_destroy(&(runs->data[i].result));
                     }
-                    darray_profiler_result_clear(results);
-                    //requested_clear_all = false;
+                    darray_profrun_clear(runs);
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Cancel", popup_button_size)) {
@@ -661,28 +759,56 @@ void show_profiler_windows(
 
             bool delete_requested = false;
             u64 delete_idx = 0;
-            for (usize i = 0; i < results->len; ++i) {
-                profiler_result* result = &(results->data[i]);  // For brevity
-                // The ImGui ID must be tied to the actual result, because the results may get
+            for (usize i = 0; i < runs->len; ++i) {
+                profrun* run = &(runs->data[i]);
+                profiler_result* result = &run->result;
+                bool result_done =
+                    run->state == PROFRUN_DONE_SUCCESS ||
+                    run->state == PROFRUN_DONE_FAILURE;
+                profiler_params* p = &run->params;
+
+                // The ImGui ID must be tied to the actual result, because the runs may get
                 // deleted and/or reordered, and we want the GUI status (e.g., which treenodes
                 // are open) to persist.
-                ImGui::PushID((i32)result->id);
-                char const* result_name = targets[result->params.target_idx].name;
+                ImGui::PushID((i32)(runs->data[i].id));
+                char const* result_name = targets[p->target_idx].name;
                 ImGui::TableNextRow();
+
                 ImGui::TableSetColumnIndex(0);
-                ImGui::Checkbox("", &result->gui.plot_visible);
-                //ImGui::SameLine();
+                ImGui::Checkbox("", &(runs->data[i].intent_visible));
+
                 ImGui::TableSetColumnIndex(1);
-                if (result->verification_reject_count > 0) {
-                    ImU32 badness_color = (ImU32)(0x600000FF);
-                    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, badness_color);
-                }
+
+                ImU32 cell_bg_color = {0};
+                switch (run->state) {
+                case PROFRUN_PENDING: {
+                    cell_bg_color = (ImU32)0x6000FFFF;
+                } break;
+                case PROFRUN_RUNNING: {
+                    cell_bg_color = (ImU32)0x6000FF00;
+                } break;
+                case PROFRUN_DONE_SUCCESS: {
+                    if (result->verification_reject_count == 0) {
+                        cell_bg_color = (ImU32)ImGuiCol_Header;
+                    } else {
+                        cell_bg_color = (ImU32)0x600000FF;
+                    }
+                } break;
+                case PROFRUN_DONE_FAILURE: {
+                    cell_bg_color = (ImU32)0x60CC00FF;
+                } break;
+                default:
+                case PROFRUN_STATE_MAX: {
+                    cell_bg_color = (ImU32)0x60606060;
+                } break;
+                }  // switch (run->state)
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, cell_bg_color);
+
                 if (ImGui::TreeNodeEx(result_name,
                                       ImGuiTreeNodeFlags_SpanAllColumns |
                                       ImGuiTreeNodeFlags_SpanAvailWidth |
                                       ImGuiTreeNodeFlags_AllowOverlap
                         )) {
-                    profiler_params* p = &result->params;
                     if (ImGui::Button(ICON_LC_COPY " Again")) {
                         next_run_params = *p;
                     }
@@ -690,31 +816,35 @@ void show_profiler_windows(
                     HelpMarker("Re-load these parameters to use for the next run.");
                     ImGui::Text("Sampler: %s", samplers[p->sampler_idx].name);
                     ImGui::Text("Range: (%d, %d, %d)", p->ns.lower, p->ns.stride, p->ns.upper);
+
                     ImGui::Text("Sample size: %d", p->sample_size);
-                    ImGui::Text("Total units: %lu", result->len_units);
-                    ImGui::Text("Seed: %lu", p->seed);
+                    ImGui::Text("Total units: %" PRIu64, p->num_units);
+                    ImGui::Text("Seed: %" PRIu64, p->seed);
                     /*  // Copy to clipboard -- works, but is very ugly.
                     ImGui::SameLine();
                     if (ImGui::Button(ICON_LC_CLIPBOARD)) {
                         #define MAX_SEED_STR_LEN 21
                         char seed_str[MAX_SEED_STR_LEN] = {0};
-                        snprintf(seed_str, 21, "%llu", p->seed);
+                        snprintf(seed_str, 21, PRIu64, p->seed);
                         ImGui::SetClipboardText(seed_str);
                         #undef MAX_SEED_STR_LEN
                     }
                     */
                     ImGui::Text("Timing: %s", timing_methods[p->timing].name_short);
                     ImGui::Text("Repetitions: %d", p->repetitions);
-                    ImGui::Text("Verification: %s", p->verifier_enabled
-                                ? (0 == result->verification_reject_count
-                                   ? ICON_LC_CHECK " Success"
-                                   : ICON_LC_X " Failure")
+                    ImGui::Text("Verification: %s",
+                                p->verifier_enabled
+                                ? (result_done
+                                   ? (0 == result->verification_reject_count
+                                      ? ICON_LC_CHECK " Success"
+                                      : ICON_LC_X " Failure")
+                                   : "Pending")
                                 : "Off");
                     // TODO Display more details:
                     //    - Total memory used by this result (i.e., size of local_arena)
                     //    - Timestamp: Began, finished
                     //    - Total time elapsed
-                    //    - Profiling progress bar, with "pause"/"continue" button; hide results by
+                    //    - Profiling progress bar, with "pause"/"continue" button; hide runs by
                     //      default while profiling, but allow user to manually select checkbox to
                     //      view live results in graph as they arrive.
                     ImGui::TreePop();
@@ -730,12 +860,12 @@ void show_profiler_windows(
                     delete_idx = i;
                 }
                 ImGui::PopID();
-            }  // for each result
+            }  // for each run
             if (delete_requested) {
                 logger_appendf(l, LOG_LEVEL_DEBUG,
-                               "Destroying result ID %d.", results->data[delete_idx].id);
-                result_destroy(&(results->data[delete_idx]));
-                darray_profiler_result_remove(results, delete_idx);
+                               "Destroying profiler run id:%d.", runs->data[delete_idx].id);
+                profiler_result_destroy(&(runs->data[delete_idx].result));
+                darray_profrun_remove(runs, delete_idx);
             }
             ImGui::EndTable();
         }  // table
@@ -762,9 +892,14 @@ void show_profiler_windows(
             guiconf->visible_data_mean ||
             guiconf->visible_data_median ||
             guiconf->visible_data_bounds;
-        if (!visible_any_prev && visible_any_now) {
+        if (!visible_any_prev && visible_any_now && guiconf->auto_zoom) {
             // Bugfix: If user made new data while nothing was visible, we must re-adjust axes.
-            ImPlot::SetNextAxesToFit();
+            for (usize i = 0; i < runs->len; ++i) {
+                if (profrun_actually_visible(&(runs->data[i]))) {
+                    ImPlot::SetNextAxesToFit();
+                    break;
+                }
+            }
         }
     }
 
@@ -776,6 +911,19 @@ void show_profiler_windows(
     ImGui::BeginChild("PlotChild", ImVec2(0, -1),
                       ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysAutoResize,
                       ImGuiWindowFlags_None);
+
+    for (usize i = 0; i < runs->len; ++i) {
+        profrun* run = &runs->data[i];
+        if (run->fresh) {
+            if (profrun_actually_visible(run) && guiconf->auto_zoom) {
+                // Set plot axes to fit the bounds of the new data.
+                ImPlot::SetNextAxesToFit();
+            }
+            run->fresh = false;
+        }
+    }
+
+
     if (ImPlot::BeginPlot(
                 "Running Time",
                 ImVec2(-1, -1),
@@ -791,17 +939,15 @@ void show_profiler_windows(
         ImPlot::SetupAxes("n", time_axis_label, 0, 0);
         ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_NoButtons);
 
-        for (usize i = 0; i < results->len; ++i) {
-            profiler_result* result = &(results->data[i]);
-            if (!result->gui.plot_visible) {
+        for (usize i = 0; i < runs->len; ++i) {
+            profrun* run = &(runs->data[i]);
+            profiler_params* params = &run->params;
+            profiler_result* result = &run->result;
+            if (!profrun_actually_visible(run)) {
                 continue;
             }
 
-            // TODO Why is phantom data flickering in the plot, even right at the beginning when
-            // result.len_units == 0 ?! Is this a graphics glitch on my system only?
-            // TODO Verify len_groups,len_units <= I32_MAX before plotting, due to
-            //      ImPlot limitations.
-            char const* plot_name = targets[result->params.target_idx].name;
+            char const* plot_name = targets[params->target_idx].name;
 
             // TODO Also allow user to pick arbitrary quantiles as upper/lower.
             if (guiconf->visible_data_bounds) {
@@ -811,7 +957,7 @@ void show_profiler_windows(
                         &result->groups[0].n,
                         &result->groups[0].time_min,
                         &result->groups[0].time_max,
-                        (i32)result->len_groups,
+                        (i32)params->num_groups,
                         0,
                         0,
                         sizeof(*result->groups));
@@ -825,7 +971,7 @@ void show_profiler_windows(
                         plot_name,
                         &result->groups[0].n,
                         &result->groups[0].time_median,
-                        (i32)result->len_groups,
+                        (i32)params->num_groups,
                         0,
                         0,
                         sizeof(*result->groups));
@@ -837,7 +983,7 @@ void show_profiler_windows(
                         plot_name,
                         &result->groups[0].n,
                         &result->groups[0].time_mean,
-                        (i32)result->len_groups,
+                        (i32)params->num_groups,
                         0,
                         0,
                         sizeof(*result->groups));
@@ -866,7 +1012,7 @@ void show_profiler_windows(
                         plot_name,
                         &result->units[0].n,
                         &result->units[0].time,
-                        (i32)result->len_units,
+                        (i32)params->num_units,
                         0,
                         0,
                         sizeof(*result->units)
@@ -1011,7 +1157,7 @@ int main(int, char**)
     logger global_log = logger_create();
     arena global_arena = arena_create(GLOBAL_ARENA_SIZE);
     host_info host = {0};
-    darray_profiler_result profiler_results = darray_profiler_result_new(&global_arena, 5);
+    darray_profrun profiler_runs = darray_profrun_new(&global_arena, 5);
 
     // Main loop
     bool done = false;
@@ -1138,9 +1284,12 @@ int main(int, char**)
         if (guiconf.visible_imgui_metrics_window)
             ImGui::ShowMetricsWindow(&guiconf.visible_imgui_metrics_window);
 
+        // Computation
+        manage_profiler_workers(&global_log, &host, &profiler_runs);
+
         // Our windows
         show_log_window(&guiconf, &global_log);
-        show_profiler_windows(&guiconf, &global_log, &global_arena, &host, &profiler_results);
+        show_profiler_windows(&guiconf, &global_log, &global_arena, &host, &profiler_runs);
 
         // Rendering
         ImGui::Render();

@@ -145,8 +145,10 @@ u32 clamp_i32_u32(i32 x) { return (u32)MAX(0, x); }
 u32 clamp_i64_u32(i64 x) { return (u32)MAX(0, x); }
 i32 clamp_u64_i32(u64 x) { return (x > I32_MAX) ? I32_MAX : (i32)x; }
 
-#define X(T) \
-T range_##T##_count(range_##T r) { return (r.upper - r.lower) / r.stride + 1; } \
+#define X(T)                                                            \
+T range_##T##_count(range_##T r) {                                      \
+    return (r.upper - r.lower) / r.stride + 1;                          \
+}                                                                       \
 void range_##T##_repair(range_##T * r)                                  \
 {                                                                       \
     r->lower = MAX(0, r->lower);                                        \
@@ -588,7 +590,7 @@ void arena_tmp_end(arena_tmp tmp)
 }
 
 // Obtain some temporary memory. If other arenas are present in the local scope, and if aliasing is
-// possible (i.e., the other arenas might themselves be scratch arenas), then the coller should pass
+// possible (i.e., the other arenas might themselves be scratch arenas), then the caller should pass
 // them in as conflicts.
 //
 // Typical usage:

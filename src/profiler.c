@@ -57,7 +57,8 @@ typedef struct
 typedef struct
 {
     // Sampler parameters
-    // NOTE These are i32 out of necessity for the time being (ImGui standard widgets require it).
+    // NOTE The ns and sample_size are i32 out of necessity for the time being (ImGui standard
+    // widgets require it); but they should really be u64 instead.
     range_i32 ns;
     i32 sample_size;
     u64 seed;
@@ -73,30 +74,13 @@ typedef struct
     //repeat_method repeat;
     i32 repetitions;
     bool verifier_enabled;
+
+    // Computed parameters
+    // Invariant: num_groups == range_count(ns).
+    u64 num_groups;
+    // Invariant: num_units == num_groups * sample_size, or 0 in case of integer overflow.
+    u64 num_units;
 }  profiler_params;
-
-profiler_params profiler_params_default()
-{
-    profiler_params rtn;
-
-    rtn.ns.lower = 0;
-    rtn.ns.stride = 1;
-    rtn.ns.upper = 200;
-    rtn.sample_size = 10;
-    rtn.seed = 0;
-    rtn.seed_from_time = false;
-
-    rtn.sampler_idx = 0;
-    rtn.target_idx = 0;
-    rtn.verifier_idx = 0;
-    rtn.timing = TIMING_RDTSC;
-    rtn.adjust_for_timer_overhead = false;
-    rtn.warmup_ms = 100;
-    rtn.repetitions = 10;
-    rtn.verifier_enabled = true;
-
-    return rtn;
-}
 
 typedef struct
 {
@@ -119,57 +103,89 @@ typedef struct
 
 typedef struct
 {
-    bool plot_visible;
-} profiler_result_gui_state;
-
-typedef struct
-{
+    bool valid;
     arena local_arena;  // Memory container; lifetime is until this result is freed.
-    u64 id;  // id==0 indicates that this is a stub (uninitialized, or already destroyed).
 
-    profiler_params params;
+    // NOTE The sizes of these arrays are defined in struct profiler_params; it is stored separately
+    // to simplify thread safety enforcement: the profiler thread gets exclusive access to the
+    // profiler_result while it's working, and the GUI thread can in the meantime still access the
+    // profiler_params.
+
     u32* input;  // Scratch space for storing input to targets.
     u32* input_clone;  // For verifier.
 
-    u64 len_units;
-    u64 len_groups;
     profiler_result_unit* units;
     profiler_result_group* groups;
 
     u64 verification_reject_count;
-
-    profiler_result_gui_state gui;
 } profiler_result;
-typedef_darray(profiler_result);
 
 
 /**** Functions ****/
 
-void result_destroy(profiler_result* result);
+void profiler_params_recompute_invariants(profiler_params* params) {
+    params->num_groups = range_i32_count(params->ns);
+    // Check for integer overflow.
+    if ((u64)params->num_groups * (u64)params->sample_size <= (u64)I32_MAX) {
+        params->num_units = params->num_groups * params->sample_size;
+    } else {
+        params->num_units = 0;
+    }
+}
 
-// Initialize result. On failure, make a stub (result == {0}).
-// If this call succeeds, the caller must eventually call result_destroy().
-profiler_result result_create(profiler_params params)
+bool profiler_params_valid(profiler_params params) {
+    return params.num_units > 0;
+}
+
+profiler_params profiler_params_default()
+{
+    profiler_params params;
+
+    params.ns.lower = 0;
+    params.ns.stride = 1;
+    params.ns.upper = 200;
+    params.sample_size = 10;
+    params.seed = 0;
+    params.seed_from_time = false;
+
+    params.sampler_idx = 0;
+    params.target_idx = 0;
+    params.verifier_idx = 0;
+    params.timing = TIMING_RDTSC;
+    params.adjust_for_timer_overhead = false;
+    params.warmup_ms = 100;
+    params.repetitions = 10;
+    params.verifier_enabled = true;
+
+    profiler_params_recompute_invariants(&params);
+
+    return params;
+}
+
+void profiler_result_destroy(profiler_result* result);
+
+// Initialize result. On failure, make a stub (return {0}).
+//
+// If this call succeeds (i.e., returns a non-stub) then the caller must eventually call
+// profiler_result_destroy() to release memory associated with the new result.
+profiler_result profiler_result_create(profiler_params params)
 {
     profiler_result result = {0};
+    bool clone_input = params.verifier_enabled;
     usize arena_len_required = 0;
-    u64 len_groups = range_i32_count(params.ns);
-    u64 len_units = len_groups * params.sample_size;
 
-    // Check for len_units integer overflow.
-
-    if ((u64)len_groups * (u64)params.sample_size > (u64)I32_MAX) {
+    // Check for num_units integer overflow.
+    if (params.num_units == 0) {
         goto error_memory;
     }
 
     // Reserve local memory for the result.
 
     // Memory for one or two copies of the input.
-    bool clone_input = params.verifier_enabled;
     arena_len_required += (1 + (u32)clone_input) * params.ns.upper * sizeof(params.ns.upper);
     // Result data.
-    arena_len_required += len_units * sizeof(profiler_result_unit);
-    arena_len_required += len_groups * sizeof(profiler_result_group);
+    arena_len_required += params.num_units * sizeof(profiler_result_unit);
+    arena_len_required += params.num_groups * sizeof(profiler_result_group);
 
     result.local_arena = arena_create(arena_len_required);
     if (!result.local_arena.data) {
@@ -179,28 +195,26 @@ profiler_result result_create(profiler_params params)
 
     // Initialize the result struct.
 
-    static u64 unique_id = 1;
-    result.id = unique_id++;
-    result.params = params;
     result.input = arena_push_array_zero(&result.local_arena, u32, params.ns.upper);
     if (clone_input) {
         result.input_clone = arena_push_array_zero(&result.local_arena, u32, params.ns.upper);
     } else {
         result.input_clone = NULL;
     }
-    result.len_units = len_units;
-    result.len_groups = len_groups;
-    result.units = arena_push_array_zero(&result.local_arena, profiler_result_unit, len_units);
-    result.groups = arena_push_array_zero(&result.local_arena, profiler_result_group, len_groups);
+    result.units = arena_push_array_zero(
+            &result.local_arena, profiler_result_unit, params.num_units);
+    result.groups = arena_push_array_zero(
+            &result.local_arena, profiler_result_group, params.num_groups);
 
+    result.valid = true;
     return result;
 
 error_memory:
-    result_destroy(&result);
+    profiler_result_destroy(&result);
     return result;
 }
 
-void result_destroy(profiler_result* result)
+void profiler_result_destroy(profiler_result* result)
 {
     arena_destroy(&result->local_arena);
     static profiler_result empty_result = {0};
@@ -430,16 +444,10 @@ void waste_cpu_time(u32 timeout_ms) {
 }
 
 
-profiler_result profiler_execute(logger* l, profiler_params params, host_info* host)
+// Writes directly to result.
+void profiler_execute(profiler_params params, profiler_result* result, host_info host)
 {
-    logger_append(l, LOG_LEVEL_INFO, "Starting profiler run.");
-
-    // Save metadata and results for this profiler run.
-    profiler_result result = result_create(params);
-    if (!result.id) {
-        logger_append(l, LOG_LEVEL_ERROR, "Failed to allocate new profiler result.");
-        return result;
-    }
+    f64 timer_period_ns = 1.0e9 / (f64)get_timer_frequency(params.timing, &host);
 
     u64 sample_size = params.sample_size;  // For brevity.
     fn_sampler_sort sampler = samplers[params.sampler_idx].fn;
@@ -474,20 +482,20 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info* h
         loop_over_range_i32(params.ns, n, n_idx) {
             for (u64 i = 0; i < (u64)sample_size; ++i) {
                 arena_tmp scratch = scratch_get(NULL, 0);
-                result.units[n_idx * sample_size + i].n = (f64)n;
-                result.units[n_idx * sample_size + i].seed = rand_state_local;
+                result->units[n_idx * sample_size + i].n = (f64)n;
+                result->units[n_idx * sample_size + i].seed = rand_state_local;
 
                 // Generate input data for this test unit. We do this inside the loop, just before
                 // measuring, to encourage the input data to already be in CPU cache when the
                 // critical code begins.
-                sampler(result.input, n, &rand_state_local, scratch.a);
+                sampler(result->input, n, &rand_state_local, scratch.a);
                 if (params.verifier_enabled) {
-                    memcpy(result.input_clone, result.input, n * sizeof(*result.input));
+                    memcpy(result->input_clone, result->input, n * sizeof(*result->input));
                 }
 
                 // Measure the execution time of our target function.
                 u64 timer_initial = get_timer_value(params.timing);
-                target(result.input, n, &rand_state_local, scratch.a);
+                target(result->input, n, &rand_state_local, scratch.a);
                 u64 timer_final = get_timer_value(params.timing);
                 u64 timer_delta = timer_final - timer_initial;
 
@@ -500,28 +508,26 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info* h
                     }
                 }
 
-                // Convert to wall time. Re-query the timer frequency *every time*, just in case
-                // it's changing (e.g., non-invariant TSC).
-                u64 timer_frequency = get_timer_frequency(params.timing, host);
-                f64 timer_delta_ns = 1e9 * (f64)timer_delta / (f64)timer_frequency;
+                // Convert to wall time.
+                f64 timer_delta_ns = (f64)timer_delta * timer_period_ns;
 
                 // Save to result data.
                 if (rep == 0) {
-                    result.units[n_idx * sample_size + i].time = timer_delta_ns;
+                    result->units[n_idx * sample_size + i].time = timer_delta_ns;
                 } else {
-                    f64 best_so_far = result.units[n_idx * sample_size + i].time;
-                    result.units[n_idx * sample_size + i].time = MIN(timer_delta_ns, best_so_far);
+                    f64 best_so_far = result->units[n_idx * sample_size + i].time;
+                    result->units[n_idx * sample_size + i].time = MIN(timer_delta_ns, best_so_far);
                 }
 
                 // Verify correctness of output.
                 if (rep == 0 && params.verifier_enabled) {
                     if (!verifier(
-                                result.input_clone,  // Input
-                                result.input,        // Output (was created in-place by target)
+                                result->input_clone,  // Input
+                                result->input,        // Output (was created in-place by target)
                                 n,
                                 &rand_state_verifier,
                                 scratch.a)) {
-                        ++result.verification_reject_count;
+                        ++result->verification_reject_count;
                     }
                 }
                 scratch_release(scratch);
@@ -529,47 +535,29 @@ profiler_result profiler_execute(logger* l, profiler_params params, host_info* h
         }
     } // for (rep ...)
 
-    if (params.verifier_enabled) {
-        if (result.verification_reject_count == 0) {
-            logger_appendf(l, LOG_LEVEL_INFO,
-                   "Verification success: Verifier accepted %llu/%llu units.",
-                   result.len_units - result.verification_reject_count, result.len_units);
-        } else {
-            logger_appendf(l, LOG_LEVEL_INFO,
-                   "Verification failure: Verifier accepted %llu/%llu units.",
-                   result.len_units - result.verification_reject_count, result.len_units);
-        }
-    }
-
-
     // Gather result for plotting.
     {
         arena_tmp scratch = scratch_get(0, 0);
         f64* times = arena_push_array_zero(scratch.a, f64, sample_size);
         loop_over_range_i32(params.ns, n, n_idx) {
-            result.groups[n_idx].n = (f64)n;
-            result.groups[n_idx].time_mean = 0;
+            result->groups[n_idx].n = (f64)n;
+            result->groups[n_idx].time_mean = 0;
             for (u64 i = 0; i < (u64)sample_size; ++i) {
-                times[i] = result.units[n_idx * sample_size + i].time;
-                result.groups[n_idx].time_mean += times[i];
+                times[i] = result->units[n_idx * sample_size + i].time;
+                result->groups[n_idx].time_mean += times[i];
             }
-            result.groups[n_idx].time_mean /= sample_size;
+            result->groups[n_idx].time_mean /= sample_size;
             util_sort(times, (u32)sample_size);
-            result.groups[n_idx].time_min = times[0];
-            result.groups[n_idx].time_max = times[sample_size - 1];
+            result->groups[n_idx].time_min = times[0];
+            result->groups[n_idx].time_max = times[sample_size - 1];
             if (sample_size & 1) {
-                result.groups[n_idx].time_median = times[(sample_size - 1)/2];
+                result->groups[n_idx].time_median = times[(sample_size - 1)/2];
             } else {
-                result.groups[n_idx].time_median =
+                result->groups[n_idx].time_median =
                     (times[(sample_size - 1)/2] +
                      times[(sample_size - 1)/2 + 1]) / 2;
             }
         }
         scratch_release(scratch);
     }
-
-    result.gui.plot_visible = true;
-
-    logger_appendf(l, LOG_LEVEL_INFO, "Completed profiler run (ID %d).", result.id);
-    return result;
 }
