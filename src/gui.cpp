@@ -234,6 +234,9 @@ void manage_profiler_workers(
             if (run->params.separate_thread) {
                 // Create the worker thread.
 
+                // NOTE The platform-specific organization is messy, but we're going to tear
+                // this all out when we switch from threads to processes.
+
                 #ifdef _WIN32
 
                 run->sync.abort_event = CreateEvent(NULL, TRUE, FALSE, NULL);
@@ -700,7 +703,7 @@ void show_profiler_windows(
                 "may fail to convert to accurate wall time. "
             );
         for (i32 i = 0; i < TIMING_METHOD_ID_MAX; ++i) {
-            if (timing_methods[i].available_win32) {
+            if (timing_methods[i].available[host->os]) {
                 if (ImGui::RadioButton(timing_methods[i].name_long,
                                        next_run_params.timing == (timing_method_id)i)) {
                     next_run_params.timing = (timing_method_id)i;

@@ -2,6 +2,13 @@
 
 typedef enum
 {
+    OS_LINUX,
+    OS_WIN32,
+    OS_ENUM_MAX
+} host_os;
+
+typedef enum
+{
     TIMING_RDTSC,
     TIMING_QPC,
     TIMING_QTCT,
@@ -13,32 +20,23 @@ typedef struct
 {
     char const * name_short;
     char const * name_long;
-    bool available_linux;
-    bool available_win32;
+    bool available[OS_ENUM_MAX];
 } timing_method;
 
 static timing_method timing_methods[TIMING_METHOD_ID_MAX] =
 {
     // Do not re-order or delete methods (to avoid corrupting savefiles).
-    { "RDTSC", "X86 Time Stamp Counter (RDTSC)", true, true },
-    { "QPC", "Win32 QueryPerformanceCounter (QPC)", false, true },
-    { "QTCT", "Win32 QueryThreadCycleTime (QTCT)", false, true },
-    { "QPCT", "Win32 QueryProcessCycleTime (QPCT)", false, true },
+    { "RDTSC", "X86 Time Stamp Counter (RDTSC)", {true, true} },
+    { "QPC", "Win32 QueryPerformanceCounter (QPC)", {false, true} },
+    { "QTCT", "Win32 QueryThreadCycleTime (QTCT)", {false, true} },
+    { "QPCT", "Win32 QueryProcessCycleTime (QPCT)", {false, true} },
 };
-
-/*
-typedef enum
-{
-    OS_WINDOWS,
-    OS_LINUX
-} operating_system;
-*/
 
 typedef struct
 {
     bool initialized;
 
-    //operating_system os;
+    host_os os;
     char cpu_name[48];
     u32 cpu_num_cores;
     u32 cpu_cache_l1;
@@ -440,6 +438,11 @@ void query_host_info(host_info* host)
                 &host->cpu_cache_l3);
         // QPC frequency is fixed at system boot.
         host->qpc_frequency = get_qpc_frequency();
+        #ifdef _WIN32
+        host->os = OS_WIN32;
+        #else
+        host->os = OS_LINUX;
+        #endif
     }
 
     // Measure continually, because (on some systems) it may change, and in any case
