@@ -766,32 +766,50 @@ void show_profiler_windows(
             ImGui::TableSetColumnIndex(1); ImGui::Text("Period");
             ImGui::TableSetColumnIndex(2); ImGui::Text("Frequency");
 
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0); ImGui::Text("QPC:");
-            ImGui::TableSetColumnIndex(1);
-            ImGui::Text("%.0f ns", 1.0e9f / host->qpc_frequency);
-            ImGui::TableSetColumnIndex(2);
-            ImGui::Text("%.1f MHz", host->qpc_frequency / 1000000.0f);
-            ImGui::TableSetColumnIndex(3); HelpMarker(
-                "QueryPerformanceCounter() is a Win32 API function that is meant to give a "
-                "reliable wall clock interval measurement. Internally, it may use the TSC or "
-                "whatever other timing facilities are available on the hardware platform.");
+            if (timing_methods[TIMING_RDTSC].available[host->os]) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0); ImGui::Text("TSC:");
+                ImGui::TableSetColumnIndex(1);
+                ImGui::Text("%.3f ns",
+                            (host->tsc_frequency == 0) ? 0.0f : (1.e9f / host->tsc_frequency));
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%.0f MHz", host->tsc_frequency * 1e-6f);
+                ImGui::TableSetColumnIndex(3); HelpMarker(
+                        "Time Stamp Counter (TSC) units correspond (roughly speaking) to CPU clock "
+                        "cycles. On very old CPUs, TSC units correspond exactly to CPU cycles, "
+                        "whereas modern CPUs have an \"Invariant TSC\" that runs at a constant "
+                        "frequency independent of dynamic frequency scaling and shared across "
+                        "all cores. This frequency coincides with the base clock frequency on most, "
+                        "but not all, CPUs. "
+                        "\n\n"
+                        "This is a measured estimate (as most CPUs do not report the TSC frequency).");
+            }
 
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0); ImGui::Text("TSC:");
-            ImGui::TableSetColumnIndex(1);
-            ImGui::Text("%.3f ns", (host->tsc_frequency == 0) ? 0.0f : (1.e9f / host->tsc_frequency));
-            ImGui::TableSetColumnIndex(2);
-            ImGui::Text("%.0f MHz", host->tsc_frequency * 1e-6f);
-            ImGui::TableSetColumnIndex(3); HelpMarker(
-                "Time Stamp Counter (TSC) units correspond (roughly speaking) to CPU clock cycles. "
-                "On very old CPUs, TSC units correspond exactly "
-                "to CPU cycles, whereas modern CPUs have an \"Invariant TSC\" that runs at a "
-                "constant frequency independent of dynamic frequency scaling and shared across "
-                "all cores. This frequency coincides with the base clock frequency on most, but "
-                "not all, CPUs. "
-                "\n\n"
-                "This is a measured estimate (as most CPUs do not report the TSC frequency).");
+            if (timing_methods[TIMING_QPC].available[host->os]) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0); ImGui::Text("QPC:");
+                ImGui::TableSetColumnIndex(1);
+                ImGui::Text("%.0f ns", 1.0e9f / host->qpc_frequency);
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%.1f MHz", host->qpc_frequency / 1000000.0f);
+                ImGui::TableSetColumnIndex(3); HelpMarker(
+                        "QueryPerformanceCounter() is a Win32 API function that is meant to give a "
+                        "reliable wall clock interval measurement. Internally, it may use the TSC or "
+                        "whatever other timing facilities are available on the hardware platform.");
+            }
+
+            if (timing_methods[TIMING_CLOCK_GETTIME].available[host->os]) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0); ImGui::Text("clock_gettime():");
+                ImGui::TableSetColumnIndex(1);
+                ImGui::Text("%" PRIu64 " ns", host->clock_gettime_period);
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%.1f MHz", 1000.0f / host->clock_gettime_period);
+                ImGui::TableSetColumnIndex(3); HelpMarker(
+                        "clock_gettime() is a POSIX function that gives a high-resolution "
+                        "timestamp. The period here is as reported by clock_getres(); it does "
+                        "not necessarily coincide with the actual granularity of this timer.");
+            }
 
             ImGui::EndTable();
         }

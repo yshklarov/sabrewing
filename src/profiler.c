@@ -13,6 +13,7 @@ typedef enum
     TIMING_QPC,
     TIMING_QTCT,
     TIMING_QPCT,
+    TIMING_CLOCK_GETTIME,
     TIMING_METHOD_ID_MAX
 } timing_method_id;
 
@@ -30,6 +31,7 @@ static timing_method timing_methods[TIMING_METHOD_ID_MAX] =
     { "QPC", "Win32 QueryPerformanceCounter (QPC)", {false, true} },
     { "QTCT", "Win32 QueryThreadCycleTime (QTCT)", {false, true} },
     { "QPCT", "Win32 QueryProcessCycleTime (QPCT)", {false, true} },
+    { "CLOCK_GETTIME", "POSIX clock_gettime()", {true, false} },
 };
 
 typedef struct
@@ -42,8 +44,9 @@ typedef struct
     u32 cpu_cache_l1;
     u32 cpu_cache_l2;
     u32 cpu_cache_l3;
-    u64 qpc_frequency;
     u64 tsc_frequency;
+    u64 qpc_frequency;
+    u64 clock_gettime_period;  // ns
     bool has_tsc;
     bool has_invariant_tsc;
 
@@ -299,6 +302,19 @@ u64 get_qpc_frequency()
     #endif
 }
 
+u64 get_clock_gettime_period()
+{
+    #ifdef _WIN32
+    return 0;
+    #else
+    struct timespec ts;
+    if (clock_getres(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (u64)ts.tv_sec * 1000000000ull + (u64)ts.tv_nsec;
+    #endif
+}
+
 // Return the value of the given timer.
 /* We prevent inlining because the compiler might inline some calls and not others, which would
    interfere with timings (e.g., adjust_for_timer_overhead would be spoiled). */
@@ -353,6 +369,18 @@ u64 get_timer_value(timing_method_id tmid)
         return 0;
         #endif
     } break;
+    case TIMING_CLOCK_GETTIME: {
+        #ifdef _WIN32
+        assertm(false, "The requested timing method is unavailable on this platform.");
+        return 0;
+        #else
+        struct timespec ts;
+        if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+            return 0;
+        }
+        return (u64)ts.tv_sec * 1000000000ull + (u64)ts.tv_nsec;
+        #endif
+    } break;
     default: {
         assertm(false, "The requested timing method is unimplemented.");
         return 0;
@@ -383,6 +411,14 @@ u64 get_timer_frequency(timing_method_id tmid, host_info* host)
         #else
         assertm(false, "The requested timing method is unimplemented.");
         return 0;
+        #endif
+    } break;
+    case TIMING_CLOCK_GETTIME: {
+        #ifdef _WIN32
+        assertm(false, "The requested timing method is unavailable on this platform.");
+        return 0;
+        #else
+        return 1000000000ull;
         #endif
     } break;
     default: {
@@ -438,6 +474,7 @@ void query_host_info(host_info* host)
                 &host->cpu_cache_l3);
         // QPC frequency is fixed at system boot.
         host->qpc_frequency = get_qpc_frequency();
+        host->clock_gettime_period = get_clock_gettime_period();
         #ifdef _WIN32
         host->os = OS_WIN32;
         #else
