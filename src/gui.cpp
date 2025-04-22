@@ -1243,7 +1243,7 @@ int main(int, char**)
     //         win32/api/winuser/nf-winuser-showwindow?redirectedfrom=MSDN
 
     #ifdef _WIN32
-    ::SetProcessDPIAware();
+    SetProcessDPIAware();
     #endif
 
     // Set up SDL.
@@ -1324,6 +1324,9 @@ int main(int, char**)
     // We care most about the profiler thread; the GUI thread should not interfere.
     SDL_SetThreadPriority(SDL_THREAD_PRIORITY_LOW);
 
+    SDL_DisplayMode display_mode = {0};
+    SDL_GetCurrentDisplayMode(0, &display_mode);
+
     // Set up Dear ImGui context.
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -1360,10 +1363,14 @@ int main(int, char**)
     // GUI styling/theme
     gui_style guistyle;
     guistyle.is_dark = false;
-    guistyle.font_size = 28;
-    guistyle.font_size_intent = guistyle.font_size;
     guistyle.font_size_min = 8;
     guistyle.font_size_max = 60;
+    // Adjust default font size based on screen resolution.
+    guistyle.font_size = CLAMP(
+            (u8)(0.5 + display_mode.w / 100),
+            guistyle.font_size_min,
+            guistyle.font_size_max);
+    guistyle.font_size_intent = guistyle.font_size;
     bool guistyle_changed = true;
 
     // Global state (non-GUI)
