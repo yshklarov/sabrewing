@@ -5,7 +5,7 @@ typedef enum
     OS_LINUX,
     OS_WIN32,
     OS_ENUM_MAX
-} host_os;
+} HostOS;
 
 typedef enum
 {
@@ -15,16 +15,16 @@ typedef enum
     TIMING_QPCT,
     TIMING_CLOCK_GETTIME,
     TIMING_METHOD_ID_MAX
-} timing_method_id;
+} TimingMethodID;
 
 typedef struct
 {
     char const * name_short;
     char const * name_long;
     bool available[OS_ENUM_MAX];
-} timing_method;
+} TimingMethod;
 
-static timing_method timing_methods[TIMING_METHOD_ID_MAX] =
+static TimingMethod timing_methods[TIMING_METHOD_ID_MAX] =
 {
     // Do not re-order or delete methods (to avoid corrupting savefiles).
     { "RDTSC", "X86 Time Stamp Counter (RDTSC)", {true, true} },
@@ -38,7 +38,7 @@ typedef struct
 {
     bool initialized;
 
-    host_os os;
+    HostOS os;
     char cpu_name[48];
     u32 cpu_num_cores;
     u32 cpu_cache_l1;
@@ -53,7 +53,7 @@ typedef struct
     u64 _wall_time_freq;
     u64 _wall_time_initial;
     u64 _tsc_initial;
-} host_info;
+} HostInfo;
 
 typedef struct
 {
@@ -74,7 +74,7 @@ typedef struct
     i32 warmup_ms;
     //repeat_method repeat;
     i32 repetitions;
-    timing_method_id timing;
+    TimingMethodID timing;
     bool adjust_for_timer_overhead;
 
     // Computed parameters (invariants):
@@ -82,15 +82,15 @@ typedef struct
     u64 num_groups;
     // num_units == num_groups * sample_size, or 0 in case of integer overflow.
     u64 num_units;
-}  profiler_params;
+}  ProfilerParams;
 
 typedef struct
 {
-    rand_state seed;  // (sizeof u64)*4 = 32 bytes
+    RandState seed;  // (sizeof u64)*4 = 32 bytes
     f64 n;
     f64 time;  // nanoseconds
     // Tracking this so the input may be re-created at user's request.
-} profiler_result_unit;
+} ProfilerResultUnit;
 
 // Summary statistics for a batch of test units.
 typedef struct
@@ -100,17 +100,17 @@ typedef struct
     f64 time_max;
     f64 time_mean;
     f64 time_median;
-} profiler_result_group;
+} ProfilerResultGroup;
 
 typedef struct
 {
     bool valid;
-    arena local_arena;  // Memory container; lifetime is until this result is freed.
+    Arena local_arena;  // Memory container; lifetime is until this result is freed.
 
-    // NOTE The sizes of these arrays are defined in struct profiler_params; it is stored separately
+    // NOTE The sizes of these arrays are defined in struct ProfilerParams; it is stored separately
     // to simplify thread safety enforcement: the profiler thread gets exclusive access to the
     // profiler_result while it's working, and the GUI thread can in the meantime still access the
-    // profiler_params.
+    // ProfilerParams.
 
     // NOTE All members that may be written during the lifetime of the profiler_result are
     // pointers. This is so that a profiler_result object can be moved by the GUI thread without
@@ -119,23 +119,23 @@ typedef struct
     u32* input;  // Scratch space for storing input to targets.
     u32* input_clone;  // For verifier.
 
-    profiler_result_unit* units;
-    profiler_result_group* groups;
+    ProfilerResultUnit* units;
+    ProfilerResultGroup* groups;
 
     f32* progress;  // Between 0 and 1.
     u64* verification_accept_count;
-} profiler_result;
+} ProfilerResult;
 
 typedef struct
 {
     THREAD_EVENT abort_event;
     THREAD_MUTEX result_mutex;
-} profiler_sync;
+} ProfilerSync;
 
 
 /**** Functions ****/
 
-void profiler_params_recompute_invariants(profiler_params* params) {
+void profiler_params_recompute_invariants(ProfilerParams* params) {
     params->num_groups = range_i32_count(params->ns);
     // Check for integer overflow.
     if ((u64)params->num_groups * (u64)params->sample_size <= (u64)I32_MAX) {
@@ -145,13 +145,13 @@ void profiler_params_recompute_invariants(profiler_params* params) {
     }
 }
 
-bool profiler_params_valid(profiler_params params) {
+bool profiler_params_valid(ProfilerParams params) {
     return params.num_units > 0;
 }
 
-profiler_params profiler_params_default()
+ProfilerParams profiler_params_default()
 {
-    profiler_params params;
+    ProfilerParams params;
 
     params.ns.lower = 0;
     params.ns.stride = 1;
@@ -175,15 +175,15 @@ profiler_params profiler_params_default()
     return params;
 }
 
-void profiler_result_destroy(profiler_result* result);
+void profiler_result_destroy(ProfilerResult* result);
 
 // Initialize result. On failure, make a stub (return {0}).
 //
 // If this call succeeds (i.e., returns a non-stub) then the caller must eventually call
 // profiler_result_destroy() to release memory associated with the new result.
-profiler_result profiler_result_create(profiler_params params)
+ProfilerResult profiler_result_create(ProfilerParams params)
 {
-    profiler_result result = {0};
+    ProfilerResult result = {0};
     bool clone_input = params.verifier_enabled;
     usize arena_len_required = 0;
 
@@ -197,8 +197,8 @@ profiler_result profiler_result_create(profiler_params params)
     // Memory for one or two copies of the input.
     arena_len_required += (1 + (u32)clone_input) * params.ns.upper * sizeof(params.ns.upper);
     // Result data.
-    arena_len_required += params.num_units * sizeof(profiler_result_unit);
-    arena_len_required += params.num_groups * sizeof(profiler_result_group);
+    arena_len_required += params.num_units * sizeof(ProfilerResultUnit);
+    arena_len_required += params.num_groups * sizeof(ProfilerResultGroup);
     arena_len_required += sizeof(*result.verification_accept_count);
     arena_len_required += sizeof(*result.progress);
 
@@ -217,10 +217,10 @@ profiler_result profiler_result_create(profiler_params params)
         result.input_clone = NULL;
     }
     result.units = arena_push_array_zero(
-            &result.local_arena, profiler_result_unit, params.num_units);
+            &result.local_arena, ProfilerResultUnit, params.num_units);
     if (!result.units) goto error_memory;
     result.groups = arena_push_array_zero(
-            &result.local_arena, profiler_result_group, params.num_groups);
+            &result.local_arena, ProfilerResultGroup, params.num_groups);
     if (!result.groups) goto error_memory;
 
     result.verification_accept_count = (u64*)arena_push_zero(
@@ -238,10 +238,10 @@ error_memory:
     return result;
 }
 
-void profiler_result_destroy(profiler_result* result)
+void profiler_result_destroy(ProfilerResult* result)
 {
     arena_destroy(&result->local_arena);
-    static profiler_result empty_result = {0};
+    static ProfilerResult empty_result = {0};
     *result = empty_result;
     result->valid = false;  // For good measure.
 }
@@ -253,7 +253,7 @@ void profiler_result_destroy(profiler_result* result)
 // invariant_tsc == false, it will only use the last two times it was called as an interval for
 // measurement.
 //
-void update_tsc_frequency(host_info* host, bool first_call)
+void update_tsc_frequency(HostInfo* host, bool first_call)
 {
     // Measure the TSC frequency by calling out to another (monotonic, high-resolution) OS-provided
     // wall timer. Note that it's not possible to do this in any other way (except by manually
@@ -319,7 +319,7 @@ u64 get_clock_gettime_period()
 /* We prevent inlining because the compiler might inline some calls and not others, which would
    interfere with timings (e.g., adjust_for_timer_overhead would be spoiled). */
 NEVER_INLINE
-u64 get_timer_value(timing_method_id tmid)
+u64 get_timer_value(TimingMethodID tmid)
 {
     // This is branchy, but not overly so. If the user cares about the extra dozen instructions due
     // to calling this function (as opposed to calling, say, __rdtsc() directly), they can adjust by
@@ -389,7 +389,7 @@ u64 get_timer_value(timing_method_id tmid)
 }
 
 // Return the frequency of the given timer in Hz.
-u64 get_timer_frequency(timing_method_id tmid, host_info* host)
+u64 get_timer_frequency(TimingMethodID tmid, HostInfo* host)
 {
     switch(tmid) {
     case TIMING_RDTSC: {
@@ -432,7 +432,7 @@ u64 get_timer_frequency(timing_method_id tmid, host_info* host)
 // tests a large number of repetitions to get a good measurement.
 // Warning: The CPU should be "warmed up" when calling this, to get up to its full (or boost)
 // frequency; otherwise, the return value may be an overestimate of the true overhead.
-u64 get_timer_overhead(timing_method_id tmid, u32 timeout_ms)
+u64 get_timer_overhead(TimingMethodID tmid, u32 timeout_ms)
 {
     // Our process might be pre-empted, so we need to do this many times to be very sure that we
     // don't over-estimate the overhead.
@@ -460,7 +460,7 @@ u64 get_timer_overhead(timing_method_id tmid, u32 timeout_ms)
 
 // Probe the host for general information about the processor, etc.
 // Note: More detailed CPU information is available through Sysinternals Coreinfo and CPU-Z.
-void query_host_info(host_info* host)
+void query_host_info(HostInfo* host)
 {
     if (!host->initialized) {
         get_cpu_brand(host->cpu_name);
@@ -494,7 +494,7 @@ void waste_cpu_time(u32 timeout_ms) {
     }
     u64 start_time = get_ostime_count(false);
     u64 end_time = start_time + get_ostime_freq() * timeout_ms / 1000;
-    rand_state rng = {0};
+    RandState rng = {0};
     rand_init_from_time(&rng);
     // The "extra" bit shall prevent the compiler from optimizing away our code.
     u64 extra = 0;
@@ -507,17 +507,17 @@ void waste_cpu_time(u32 timeout_ms) {
 
 
 void profiler_execute(
-        profiler_params params,
-        profiler_result result,
-        host_info host,
-        profiler_sync sync)
+        ProfilerParams params,
+        ProfilerResult result,
+        HostInfo host,
+        ProfilerSync sync)
 {
     f64 timer_period_ns = 1.0e9 / (f64)get_timer_frequency(params.timing, &host);
 
     u64 sample_size = params.sample_size;  // For brevity.
-    fn_sampler_sort sampler = samplers[params.sampler_idx].fn;
-    fn_target_sort target = targets[params.target_idx].fn;
-    fn_verifier_sort verifier = verifiers[params.verifier_idx].fn;
+    fn_sampler sampler = samplers[params.sampler_idx].fn;
+    fn_target target = targets[params.target_idx].fn;
+    fn_verifier verifier = verifiers[params.verifier_idx].fn;
 
     // The warmup must precede the call to get_timer_overhead().
     waste_cpu_time(params.warmup_ms);
@@ -534,7 +534,7 @@ void profiler_execute(
     // The verifier must use its own RNG state, independent from the target, because
     // target behaviour should be consistent across repetitions, and across distinct runs
     // regardless of whether a verifier is enabled.
-    rand_state rand_state_verifier = {0};
+    RandState rand_state_verifier = {0};
     if (params.verifier_enabled) {
         rand_init_from_time(&rand_state_verifier);
     }
@@ -547,7 +547,7 @@ void profiler_execute(
         if (aborting) break;
 
         // Each repetition must use the same sample, so we re-seed here.
-        rand_state rand_state_local = {0};
+        RandState rand_state_local = {0};
         rand_init_from_seed(&rand_state_local, params.seed);
 
         loop_over_range_i32(params.ns, n, n_idx) {
@@ -564,7 +564,7 @@ void profiler_execute(
                     }
                 }
 
-                arena_tmp scratch = scratch_get(NULL, 0);
+                ArenaTmp scratch = scratch_get(NULL, 0);
                 result.units[n_idx * sample_size + i].n = (f64)n;
                 result.units[n_idx * sample_size + i].seed = rand_state_local;
 
@@ -630,7 +630,7 @@ void profiler_execute(
             mutex_acquire(sync.result_mutex);
         }
 
-        arena_tmp scratch = scratch_get(0, 0);
+        ArenaTmp scratch = scratch_get(0, 0);
         f64* times = arena_push_array_zero(scratch.a, f64, sample_size);
         loop_over_range_i32(params.ns, n, n_idx) {
             result.groups[n_idx].n = (f64)n;
@@ -659,20 +659,20 @@ void profiler_execute(
 }
 
 typedef struct {
-    profiler_params params;
-    profiler_result result;
-    host_info host;
-    profiler_sync sync;
+    ProfilerParams params;
+    ProfilerResult result;
+    HostInfo host;
+    ProfilerSync sync;
     THREAD_EVENT done_copying_args;
 } profiler_execute_args_struct;
 
 THREAD_ENTRYPOINT profiler_execute_begin(void* vargs)
 {
     profiler_execute_args_struct* args = (profiler_execute_args_struct*)vargs;
-    profiler_params params = args->params;
-    profiler_result result = args->result;
-    host_info host = args->host;
-    profiler_sync sync = args->sync;
+    ProfilerParams params = args->params;
+    ProfilerResult result = args->result;
+    HostInfo host = args->host;
+    ProfilerSync sync = args->sync;
     event_signal(args->done_copying_args);
     profiler_execute(params, result, host, sync);
     return 0;

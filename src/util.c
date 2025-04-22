@@ -97,7 +97,7 @@ typedef struct
     u8 minute; // 0 through 59
     u8 second; // 0 through 59
     u16 millisecond; // 0 through 999
-} timedate;
+} Timedate;
 
 
 /**************** Forward declarations ****************/
@@ -105,7 +105,7 @@ typedef struct
 u64 get_ostime_count(bool pause_for_rollover);
 u64 get_ostime_freq();
 u64 get_ostime_ms();
-timedate get_timedate();
+Timedate get_timedate();
 
 
 /**************** Utility macros & functions ****************/
@@ -241,11 +241,11 @@ void util_sort(f64* data, u32 n)
 // JSF (Jenkins Small Fast) random number generator
 // https://burtleburtle.net/bob/rand/smallprng.html
 
-typedef struct { u64 a; u64 b; u64 c; u64 d; } rand_state;
-static rand_state rand_state_global;
+typedef struct { u64 a; u64 b; u64 c; u64 d; } RandState;
+static RandState rand_state_global;
 
 // Get random data, and increment the seed.
-u64 rand_raw(rand_state* x)
+u64 rand_raw(RandState* x)
 {
     u64 e = x->a - ROT32(x->b, 27);
     x->a = x->b ^ ROT32(x->c, 17);
@@ -255,7 +255,7 @@ u64 rand_raw(rand_state* x)
     return x->d;
 }
 
-void rand_init_from_seed(rand_state* x, u64 seed)
+void rand_init_from_seed(RandState* x, u64 seed)
 {
     x->a = 0xf1ea5eed;
     x->b = x->c = x->d = seed;
@@ -272,22 +272,22 @@ u64 rand_get_seed_from_time()
     return get_ostime_count(false);
 }
 
-void rand_init_from_time(rand_state* x)
+void rand_init_from_time(RandState* x)
 {
     rand_init_from_seed(x, rand_get_seed_from_time());
 }
 
-i32 rand_i32(rand_state* x) { return (i32)rand_raw(x); }
-i64 rand_i64(rand_state* x) { return (i64)rand_raw(x); }
-u32 rand_u32(rand_state* x) { return (u32)rand_raw(x); }
-u64 rand_u64(rand_state* x) { return (u64)rand_raw(x); }
+i32 rand_i32(RandState* x) { return (i32)rand_raw(x); }
+i64 rand_i64(RandState* x) { return (i64)rand_raw(x); }
+u32 rand_u32(RandState* x) { return (u32)rand_raw(x); }
+u64 rand_u64(RandState* x) { return (u64)rand_raw(x); }
 u64 randg_i32() { return (i32)rand_raw(&rand_state_global); }
 
 // Generate a uniform random integer from the closed interval [min, max].
 //
 // Parameters:
 //   min <= max.
-u32 rand_range_unif(rand_state* x, u32 min, u32 max)
+u32 rand_range_unif(RandState* x, u32 min, u32 max)
 {
     assertm(min <= max, "Cannot sample from empty range.");
     // For uniformity, it's necessary that maximum delta (2^32 - 1) be much smaller than the
@@ -298,13 +298,13 @@ u32 rand_range_unif(rand_state* x, u32 min, u32 max)
 }
 
 // This is very inefficient; call rand_u64() to get 64 bits all at once.
-u32 rand_bool(rand_state* x)
+u32 rand_bool(RandState* x)
 {
     return rand_u64(x) % 2;
 }
 
 // Return `true` with probability p.
-bool rand_bernoulli(rand_state* x, f32 p)
+bool rand_bernoulli(RandState* x, f32 p)
 {
     if (p == 0.0f) return false;
     if (p == 1.0f) return true;
@@ -319,7 +319,7 @@ bool rand_bernoulli(rand_state* x, f32 p)
 // Parameters:
 //    n, k: Will choose k random elements of combination to be true, and n - k to be false.
 //    combination: Must point to contiguous array of n bools.
-void rand_combination(rand_state* x, u32 n, u32 k, bool combination[])
+void rand_combination(RandState* x, u32 n, u32 k, bool combination[])
 {
     assert(n >= k);
     for (u32 i = 0; i < n; ++i) {
@@ -421,9 +421,9 @@ u64 get_ostime_ms()
 }
 
 // Get the time and date in the local timzone.
-timedate get_timedate()
+Timedate get_timedate()
 {
-    timedate now;
+    Timedate now;
   #ifdef _WIN32
     SYSTEMTIME now_win32;
     GetLocalTime(&now_win32);
@@ -464,7 +464,7 @@ timedate get_timedate()
 // Return the number of characters printed, *not* including the null terminator.
 //
 #define TIMEDATE_FMT_LEN 19
-u32 print_timedate(u8* buf, u32 buf_len, timedate td, bool bracketed)
+u32 print_timedate(u8* buf, u32 buf_len, Timedate td, bool bracketed)
 {
     char const* format_str = bracketed
         ? "[%04u-%02u-%02u %02u:%02u:%02u]"
@@ -480,7 +480,7 @@ u32 print_timedate(u8* buf, u32 buf_len, timedate td, bool bracketed)
 // Simple, fixed-size, stack-type arena (aka bump allocator).
 // TODO Make growable: reserve, but don't commit, a huge block of memory.
 // TODO Linux implementation.
-// TODO Implement fixed-size ring buffer on top of arena,
+// TODO Implement fixed-size ring buffer on top of Arena,
 //      both with fixed-length and variable-length elements.
 
 typedef struct
@@ -488,22 +488,22 @@ typedef struct
     byte* data;
     usize len;
     usize pos;
-} arena;
+} Arena;
 
 typedef struct
 {
-    arena* a;
+    Arena* a;
     usize pos_saved;
-} arena_tmp;
+} ArenaTmp;
 
-// Create a fixed-size arena. Commit all memory immediately. The parameter `initial_size` (in bytes)
+// Create a fixed-size Arena. Commit all memory immediately. The parameter `initial_size` (in bytes)
 // must be nonzero.
 //
-// Return: arena on success; stub (all-0) on error.
+// Return: Arena on success; stub (all-0) on error.
 //
-arena arena_create(usize initial_size)
+Arena arena_create(usize initial_size)
 {
-    arena a = {0};
+    Arena a = {0};
     if (initial_size == 0) {
         assertm(false, "Cannot create an empty arena.");
         return a;
@@ -543,11 +543,11 @@ arena arena_create(usize initial_size)
     return a;
 }
 
-// Release the arena, i.e., deallocate its memory. If arena was already released, do nothing.
+// Release the Arena, i.e., deallocate its memory. If Arena was already released, do nothing.
 //
 // Return: true on success; false on error.
 //
-bool arena_destroy(arena* a)
+bool arena_destroy(Arena* a)
 {
     if (!a->data) {
         return true;
@@ -565,37 +565,37 @@ bool arena_destroy(arena* a)
     return success;
 }
 
-// Reset the arena to empty. Do not deallocate/decommit any memory.
-void arena_clear(arena* a)
+// Reset the Arena to empty. Do not deallocate/decommit any memory.
+void arena_clear(Arena* a)
 {
     a->pos = 0;
 }
 
-// Return a temporary (sub-lifetime) arena, built on top of an existing arena. No new memory is
+// Return a temporary (sub-lifetime) arena, built on top of an existing Arena. No new memory is
 // allocated.
-arena_tmp arena_tmp_begin(arena* a)
+ArenaTmp arena_tmp_begin(Arena* a)
 {
-    arena_tmp tmp = {0};
+    ArenaTmp tmp = {0};
     tmp.a = a;
     tmp.pos_saved = tmp.a->pos;
     return tmp;
 }
 
-// Restore the original arena to its state before arena_tmp_begin() was called.
-void arena_tmp_end(arena_tmp tmp)
+// Restore the original Arena to its state before arena_tmp_begin() was called.
+void arena_tmp_end(ArenaTmp tmp)
 {
     if (tmp.a) {
         tmp.a->pos = tmp.pos_saved;
     }
 }
 
-// Obtain some temporary memory. If other arenas are present in the local scope, and if aliasing is
-// possible (i.e., the other arenas might themselves be scratch arenas), then the caller should pass
+// Obtain some temporary memory. If other Arenas are present in the local scope, and if aliasing is
+// possible (i.e., the other Arenas might themselves be scratch arenas), then the caller should pass
 // them in as conflicts.
 //
 // Typical usage:
-//      arena_tmp scratch = scratch_get(NULL, 0);
-// or:  arena_tmp scratch = scratch_get(&&arena, 1);
+//      ArenaTmp scratch = scratch_get(NULL, 0);
+// or:  ArenaTmp scratch = scratch_get(&&arena, 1);
 //      // ... do stuff with the arena *scratch.a ...
 //      scratch_release(scratch);
 //
@@ -608,11 +608,11 @@ void arena_tmp_end(arena_tmp tmp)
 //
 #define MAX_SCRATCH_ARENAS 2
 #define SCRATCH_ARENA_SIZE (8 * 1024 * 1024)
-arena_tmp scratch_get(arena** conflicts, usize conflict_count)
+ArenaTmp scratch_get(Arena** conflicts, usize conflict_count)
 {
     // TODO Make scratch arenas thread-local.
     // TODO Use growable scratch arenas.
-    static arena scratch[MAX_SCRATCH_ARENAS] = {0};
+    static Arena scratch[MAX_SCRATCH_ARENAS] = {0};
     bool does_conflict[MAX_SCRATCH_ARENAS] = {0};
     for (usize i = 0; i < conflict_count; ++i) {
         for (usize j = 0; j < MAX_SCRATCH_ARENAS; ++j) {
@@ -624,14 +624,14 @@ arena_tmp scratch_get(arena** conflicts, usize conflict_count)
     for (usize j = 0; j < MAX_SCRATCH_ARENAS; ++j) {
         if (!does_conflict[j]) {
             if (!scratch[j].data) {
-                arena new_arena = arena_create(SCRATCH_ARENA_SIZE);
+                Arena new_arena = arena_create(SCRATCH_ARENA_SIZE);
                 memcpy(&scratch, &new_arena, sizeof new_arena);
             }
             return arena_tmp_begin(&scratch[j]);
         }
     }
     assertm(false, "No available (non-conflicting) scratch arenas.");
-    arena_tmp empty_arena_tmp = {0};
+    ArenaTmp empty_arena_tmp = {0};
     return empty_arena_tmp;
 }
 #define scratch_release(tmp) arena_tmp_end(tmp)
@@ -640,12 +640,12 @@ arena_tmp scratch_get(arena** conflicts, usize conflict_count)
 //
 // Return: pointer to space on success; null on error.
 //
-byte* arena_push(arena* a, usize len)
+byte* arena_push(Arena* a, usize len)
 {
     if (a->pos + len > a->len) {
         // Not enough space.
-        // TODO Grow the arena: VirtualAlloc(..., MEM_COMMIT,...); update a->len.
-        assertm(false, "No space remaining in arena. Growing unimplemented.");
+        // TODO Grow the Arena: VirtualAlloc(..., MEM_COMMIT,...); update a->len.
+        assertm(false, "No space remaining in Arena. Growing unimplemented.");
         return 0;
     }
     byte* dst = a->data + a->pos;
@@ -657,7 +657,7 @@ byte* arena_push(arena* a, usize len)
 //
 // Return: pointer to the copy on success; null on error.
 //
-byte* arena_push_obj(arena* a, byte* obj, usize len)
+byte* arena_push_obj(Arena* a, byte* obj, usize len)
 {
     byte* dst = arena_push(a, len);
     if (dst) {
@@ -666,15 +666,15 @@ byte* arena_push_obj(arena* a, byte* obj, usize len)
     return dst;
 }
 
-// Push a block of zeroed memory onto the arena.
+// Push a block of zeroed memory onto the Arena.
 //
 // Return: pointer to the block on success; null on error.
 //
-byte* arena_push_zero(arena* a, usize len)
+byte* arena_push_zero(Arena* a, usize len)
 {
     if (a->pos + len > a->len) {
         // Not enough space.
-        assertm(false, "No space remaining in arena. Growing unimplemented.");
+        assertm(false, "No space remaining in Arena. Growing unimplemented.");
         return 0;
     }
     byte* dst = a->data + a->pos;
@@ -689,11 +689,11 @@ byte* arena_push_zero(arena* a, usize len)
 #define arena_push_struct(a, type) arena_push_array((a), (type), 1)
 #define arena_push_struct_zero(a, type) arena_push_array_zero((a), (type), 1)
 
-// Pop the requested number of bytes off the arena. If obj != NULL, copy the data into obj.
+// Pop the requested number of bytes off the Arena. If obj != NULL, copy the data into obj.
 //
 // Return: true on success; false on error.
 //
-bool arena_pop(arena* a, usize len, byte* obj)
+bool arena_pop(Arena* a, usize len, byte* obj)
 {
     if (len > a->pos) {
         return false;
@@ -705,14 +705,14 @@ bool arena_pop(arena* a, usize len, byte* obj)
     return true;
 }
 
-// Dynamic array (on top of arena). Elements may be arbitrary structs.
+// Dynamic array (on top of Arena). Elements may be arbitrary structs.
 //
 // Usage example:
-//   typedef_darray(mystruct);  // Already defined for some numeric types such as i32.
+//   typedef_darray(MyStruct, my_struct);  // Already defined for some numeric types such as i32.
 //   darray_mystruct vec = darray_mystruct_new(&arena, 100);
 //
 // Inspired by: https://nullprogram.com/blog/2023/10/05/
-#define typedef_darray(T)                                               \
+#define typedef_darray(T, TN)                                           \
                                                                         \
 /* A dynamic array. */                                                  \
 typedef struct                                                          \
@@ -720,14 +720,14 @@ typedef struct                                                          \
     T* data;                                                            \
     usize len;  /* Number of elements. */                               \
     usize cap;  /* Number of elements. */                               \
-} darray_##T;                                                           \
+} darray_##TN;                                                          \
                                                                         \
 /* Allocate a new dynamic array within the given arena, */              \
 /* for elements of size `element_size` bytes, initial   */              \
 /* length 0, and initial capacity `initial_cap`.        */              \
-darray_##T darray_##T##_new(arena* a, usize initial_cap)                \
+darray_##TN darray_##TN##_new(Arena* a, usize initial_cap)              \
 {                                                                       \
-    darray_##T darr;                                                    \
+    darray_##TN darr;                                                   \
     darr.data = arena_push_array_zero(a, T, initial_cap);               \
     assertm(darr.data, "Failed to allocate dynamic array.");            \
     darr.len = 0;                                                       \
@@ -736,12 +736,12 @@ darray_##T darray_##T##_new(arena* a, usize initial_cap)                \
 }                                                                       \
                                                                         \
 /* Return the address of the new (unitialized!) element. */             \
-T* darray_##T##_push(arena* a, darray_##T* darr)                        \
+T* darray_##TN##_push(Arena* a, darray_##TN* darr)                      \
 {                                                                       \
     if (darr->len == darr->cap) {                                       \
         /* Out of space: must grow. */                                  \
         usize new_cap = MAX(1, 2 * darr->cap);                          \
-        darray_##T darrnew = darray_##T##_new(a, new_cap);              \
+        darray_##TN darrnew = darray_##TN##_new(a, new_cap);            \
         memcpy(darrnew.data, darr->data, darr->len * sizeof(T));        \
         darrnew.len = darr->len;                                        \
         *darr = darrnew;                                                \
@@ -751,19 +751,19 @@ T* darray_##T##_push(arena* a, darray_##T* darr)                        \
     return darr->data + darr->len - 1;                                  \
 }                                                                       \
                                                                         \
-usize darray_##T##_size(darray_##T darr) { return darr.len; }           \
+usize darray_##TN##_size(darray_##TN darr) { return darr.len; }         \
                                                                         \
-bool darray_##T##_empty(darray_##T darr) { return darr.len == 0; }      \
+bool darray_##TN##_empty(darray_##TN darr) { return darr.len == 0; }    \
                                                                         \
-void darray_##T##_clear(darray_##T* darr) { darr->len = 0; }            \
+void darray_##TN##_clear(darray_##TN* darr) { darr->len = 0; }          \
                                                                         \
-T darray_##T##_pop(darray_##T* darr)                                    \
+T darray_##TN##_pop(darray_##TN* darr)                                  \
 {                                                                       \
     assertm(darr->len > 0, "Dynamic array: Cannot pop from empty.");    \
     return darr->data[darr->len--];                                     \
 }                                                                       \
                                                                         \
-T darray_##T##_remove(darray_##T* darr, usize idx)                      \
+T darray_##TN##_remove(darray_##TN* darr, usize idx)                    \
 {                                                                       \
     assertm(idx < darr->len, "Dynamic array index out of bounds.");     \
     T item = *(darr->data + darr->len);                                 \
@@ -774,10 +774,10 @@ T darray_##T##_remove(darray_##T* darr, usize idx)                      \
     return item;                                                        \
 }                                                                       \
                                                                         \
-T* darray_##T##_insert(arena* a, darray_##T* darr, usize idx, T item)   \
+T* darray_##TN##_insert(Arena* a, darray_##TN* darr, usize idx, T item) \
 {                                                                       \
     assertm(idx <= darr->len, "Dynamic array index out of bounds.");    \
-    darray_##T##_push(a, darr);  /* Make space for new item. */         \
+    darray_##TN##_push(a, darr);  /* Make space for new item. */        \
     for (usize i = darr->len-1; i > idx; --i) {                         \
         darr->data[i] = darr->data[i-1];                                \
     }                                                                   \
@@ -787,6 +787,6 @@ T* darray_##T##_insert(arena* a, darray_##T* darr, usize idx, T item)   \
 
 // Define dynamic arrays for simple types (such as i32).
 #define X(T) \
-typedef_darray(T);
+typedef_darray(T, T);
 FOR_BASIC_TYPES
 #undef X

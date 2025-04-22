@@ -14,7 +14,7 @@ typedef enum
     LOG_LEVEL_ERROR,
     LOG_LEVEL_CRITICAL,
     LOG_LEVEL_COUNT,
-} log_level;
+} LogLevel;
 
 typedef struct
 {
@@ -28,15 +28,15 @@ typedef struct
     #ifdef _MSC_VER
     #pragma warning( pop )
     #endif
-} logger_str;
+} LoggerStr;
 
 typedef struct
 {
-    timedate timestamp;
-    log_level level;
+    Timedate timestamp;
+    LogLevel level;
     // Contiguous, with variable-length entries, for fast search.
-    logger_str* content;
-} logger_entry;
+    LoggerStr* content;
+} LoggerEntry;
 
 // TODO Make the logger into a ring buffer, overwriting old messages. This requires:
 //      - Implement a fixed-entry-length ring buffer (on top of arena), for store_entries.
@@ -47,21 +47,21 @@ typedef struct
 {
     u32 cap;
     u32 len;
-    arena store_entries;
-    arena store_strs;
-    logger_entry* entries;  // Contiguous array.
-} logger;
+    Arena store_entries;
+    Arena store_strs;
+    LoggerEntry* entries;  // Contiguous array.
+} Logger;
 
-void logger_destroy(logger* l);
-logger logger_create()
+void logger_destroy(Logger* l);
+Logger logger_create()
 {
     // Create two arenas
-    logger l = {0};
+    Logger l = {0};
     l.cap = LOGGER_CAP;
     l.len = 0;
-    l.store_entries = arena_create(LOGGER_CAP * sizeof(logger_entry));
+    l.store_entries = arena_create(LOGGER_CAP * sizeof(LoggerEntry));
     l.store_strs = arena_create(LOGGER_MEMORY);
-    l.entries = (logger_entry*)l.store_entries.data;
+    l.entries = (LoggerEntry*)l.store_entries.data;
     if (!l.store_entries.data || !l.store_strs.data) {
         assertm(false, "Failed to allocate memory for new logger.");
         logger_destroy(&l);
@@ -72,7 +72,7 @@ logger logger_create()
 // Return the message as a null-terminated UTF-8 string, in a statically-allocated object (shared
 // across calls).
 // If the index is invalid, return a null pointer.
-u8 const* logger_get_message(logger l, u32 index)
+u8 const* logger_get_message(Logger l, u32 index)
 {
     if (index >= l.len) {
         return NULL;
@@ -94,8 +94,8 @@ u8 const* logger_get_message(logger l, u32 index)
 // statically-allocated object (shared across calls).
 // If the index is invalid, return a null pointer.
 // TODO Also allow printing the log level. In fact, switch to this simpler API:
-//      logger_get_message(logger l, u32 index, bool timestamp, bool log_level);
-u8 const* logger_get_message_with_timestamp(logger l, u32 index)
+//      logger_get_message(Logger l, u32 index, bool timestamp, bool log_level);
+u8 const* logger_get_message_with_timestamp(Logger l, u32 index)
 {
     if (index >= l.len) {
         return NULL;
@@ -114,7 +114,7 @@ u8 const* logger_get_message_with_timestamp(logger l, u32 index)
     #undef MESSAGE_MAX_LEN
 }
 
-void logger_destroy(logger* l)
+void logger_destroy(Logger* l)
 {
     l->cap = 0;
     l->len = 0;
@@ -123,7 +123,7 @@ void logger_destroy(logger* l)
     l->entries = 0;
 }
 
-void logger_clear(logger* l)
+void logger_clear(Logger* l)
 {
     l->len = 0;
     arena_clear(&l->store_entries);
@@ -135,7 +135,7 @@ void logger_clear(logger* l)
 //
 // Return: True on success; false on failure (e.g., out of memory).
 //
-bool logger_append(logger* l, log_level level, char const* message)
+bool logger_append(Logger* l, LogLevel level, char const* message)
 {
     if (l->len == l->cap) {
         return false;
@@ -145,15 +145,15 @@ bool logger_append(logger* l, log_level level, char const* message)
 
     // Allocate memory in our two arenas.
     bool success = true;
-    logger_entry* e = (logger_entry*)arena_push(&l->store_entries, sizeof(logger_entry));
-    logger_str* s = NULL;
+    LoggerEntry* e = (LoggerEntry*)arena_push(&l->store_entries, sizeof(LoggerEntry));
+    LoggerStr* s = NULL;
     if (!e) {
         success = false;
     } else {
-        s = (logger_str*)arena_push(&l->store_strs, sizeof(logger_str) + data_len);
+        s = (LoggerStr*)arena_push(&l->store_strs, sizeof(LoggerStr) + data_len);
         if (!s) {
             // Roll back.
-            arena_pop(&l->store_entries, sizeof(logger_entry), NULL);
+            arena_pop(&l->store_entries, sizeof(LoggerEntry), NULL);
             success = false;
         }
     }
@@ -172,7 +172,7 @@ bool logger_append(logger* l, log_level level, char const* message)
 }
 
 // Add a new log entry. Like logger_apend(), but with formatting like printf().
-bool logger_appendf(logger* l, log_level level, char const* fmt, ...)
+bool logger_appendf(Logger* l, LogLevel level, char const* fmt, ...)
 {
     char buf[LOGGER_MAX_ENTRYSIZE] = {0};
     va_list vlist;

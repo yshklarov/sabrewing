@@ -22,7 +22,7 @@
 #include "util_thread.c"
 #include "logger.c"
 #include "cpuinfo.c"
-#include "sort.c"
+#include "problems/sort.c"
 #include "profiler.c"
 
 // TODO Make this into a unit test suite.
@@ -32,7 +32,7 @@
 
 void test_logger()
 {
-    logger l = logger_create();
+    Logger l = logger_create();
     printf("Logger info: length %d, capacity %d.\n", l.len, l.cap);
     printf("Trying to print a message from empty logger... ");
     if (logger_get_message_with_timestamp(l, 0)) {

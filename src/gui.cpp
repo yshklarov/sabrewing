@@ -19,7 +19,7 @@
 #include "util_thread.c"
 #include "logger.c"
 #include "cpuinfo.c"
-#include "sort.c"
+#include "problems/sort.c"  // Choose one problem here (compiled in, for now).
 #include "profiler.c"
 
 
@@ -43,7 +43,7 @@ typedef struct
     bool auto_zoom;
     bool live_view;
     bool log_show_timestamps;
-} gui_config;
+} GuiConfig;
 
 typedef struct
 {
@@ -52,7 +52,7 @@ typedef struct
     u8 font_size;
     u8 font_size_min;
     u8 font_size_max;
-} gui_style;
+} GuiStyle;
 
 typedef enum
 {
@@ -64,25 +64,25 @@ typedef enum
     PROFRUN_DONE_FAILURE,
     PROFRUN_DONE_ABORTED,
     PROFRUN_STATE_MAX,
-} profrun_state;
+} ProfRunState;
 
 typedef struct
 {
     u64 id;  // 1-indexed; id==0 indicates stub (uninitialized, or already destroyed).
-    profrun_state state;  // Once PROFRUN_DONE_..., result is safe to read.
+    ProfRunState state;  // Once PROFRUN_DONE_..., result is safe to read.
     THREAD thread_handle;
-    profiler_sync sync;
-    profiler_params params;
-    profiler_result result;  // Written directly by profiler thread: Beware data races.
+    ProfilerSync sync;
+    ProfilerParams params;
+    ProfilerResult result;  // Written directly by profiler thread: Beware data races.
     bool intent_visible;
     bool fresh;
-} profrun;
-typedef_darray(profrun);
+} Profrun;
+typedef_darray(Profrun, profrun);
 
 
 /****  Functions ****/
 
-bool profrun_busy(profrun* run)
+bool profrun_busy(Profrun* run)
 {
     return
         run->state == PROFRUN_RUNNING ||
@@ -90,7 +90,7 @@ bool profrun_busy(profrun* run)
         run->state == PROFRUN_ABORTING;
 }
 
-bool profrun_done(profrun* run)
+bool profrun_done(Profrun* run)
 {
     return
         run->state == PROFRUN_DONE_SUCCESS ||
@@ -98,9 +98,9 @@ bool profrun_done(profrun* run)
         run->state == PROFRUN_DONE_ABORTED;
 }
 
-// Deletes the profrun immediately if possible, or sets the thread to abort if it's running.
+// Deletes the Profrun immediately if possible, or sets the thread to abort if it's running.
 // Return true if deleted.
-bool profrun_try_delete(logger* l, darray_profrun* runs, usize idx)
+bool profrun_try_delete(Logger* l, darray_profrun* runs, usize idx)
 {
     bool deleted = false;
     switch (runs->data[idx].state) {
@@ -125,7 +125,7 @@ bool profrun_try_delete(logger* l, darray_profrun* runs, usize idx)
 }
 
 // Return true if the results for the given run should be plotted.
-bool profrun_actually_visible(profrun* run, bool live_view)
+bool profrun_actually_visible(Profrun* run, bool live_view)
 {
     bool data_available =
         live_view ||
@@ -134,7 +134,7 @@ bool profrun_actually_visible(profrun* run, bool live_view)
     return data_available && run->intent_visible;
 }
 
-void profiler_worker_finish(logger* l, profrun* run)
+void profiler_worker_finish(Logger* l, Profrun* run)
 {
     if (run->state == PROFRUN_ABORTING) {
         run->state = PROFRUN_DONE_ABORTED;
@@ -168,8 +168,8 @@ void profiler_worker_finish(logger* l, profrun* run)
 }
 
 void manage_profiler_workers(
-        logger* l,
-        host_info* host,
+        Logger* l,
+        HostInfo* host,
         darray_profrun* runs)
 {
     // Only one worker thread at a time for now, because memory (scratch) arenas are not
@@ -184,7 +184,7 @@ void manage_profiler_workers(
 
     // Take care of already-running worker(s).
     for (usize i = 0; i < runs->len; ++i) {
-        profrun* run = &runs->data[i];
+        Profrun* run = &runs->data[i];
         if (run->state == PROFRUN_ABORT_REQUESTED) {
             assertm(run->params.separate_thread, "Worker shouldn't have its own thread.");
             logger_appendf(l, LOG_LEVEL_DEBUG,
@@ -221,7 +221,7 @@ void manage_profiler_workers(
         if (!workers_available) {
             break;
         }
-        profrun* run = &runs->data[i];
+        Profrun* run = &runs->data[i];
         if (run->state == PROFRUN_PENDING) {
             if (!run->params.separate_thread && state_changed_this_frame) {
                 // Wait for one GUI frame to update the GUI before blocking the thread. This
@@ -312,7 +312,7 @@ void manage_profiler_workers(
     }
 }
 
-void set_imgui_style(logger* l, ImGuiIO* io, bool is_dark, u8 font_size)
+void set_imgui_style(Logger* l, ImGuiIO* io, bool is_dark, u8 font_size)
 {
     // TODO Note ImGui has an experimental feature, branch feature/dynamic_fonts, as of 2025-03-05,
     //      for better font resizing. We'll switch to it once it's ready.
@@ -471,8 +471,8 @@ void TextIconGhost()
 /**** Our windows ****/
 
 void show_log_window(
-        gui_config* guiconf,
-        logger* l)
+        GuiConfig* guiconf,
+        Logger* l)
 {
     if (!guiconf->visible_log_window) {
         return;
@@ -517,15 +517,15 @@ void show_log_window(
 }
 
 void show_profiler_windows(
-        gui_config* guiconf,
-        logger* l,
-        arena* a,
-        host_info* host,
+        GuiConfig* guiconf,
+        Logger* l,
+        Arena* a,
+        HostInfo* host,
         darray_profrun* runs)
 {
     ImGui::Begin("Profiler" /*, visible*/);
 
-    static profiler_params next_run_params = profiler_params_default();
+    static ProfilerParams next_run_params = profiler_params_default();
 
     f32 icon_width = ImGui::GetFrameHeightWithSpacing();
 
@@ -557,7 +557,7 @@ void show_profiler_windows(
 
         // TODO Implement our own custom ImGui::DragIntRange2, which supports u64 and a third
         //      "stride" parameter in the middle, and does better bounds checking; then, change
-        //      profiler_params to use a range_u32 or range_u64. Do the same for sample_size.
+        //      ProfilerParams to use a range_u32 or range_u64. Do the same for sample_size.
         TextIcon(ICON_LC_TALLY_5); ImGui::SameLine(icon_width);
         if (ImGui::DragIntRange2(
                     "Array size (n) range", &next_run_params.ns.lower, &next_run_params.ns.upper,
@@ -743,8 +743,8 @@ void show_profiler_windows(
             if (timing_methods[i].available[host->os]) {
                 TextIconGhost(); ImGui::SameLine(icon_width);
                 if (ImGui::RadioButton(timing_methods[i].name_long,
-                                       next_run_params.timing == (timing_method_id)i)) {
-                    next_run_params.timing = (timing_method_id)i;
+                                       next_run_params.timing == (TimingMethodID)i)) {
+                    next_run_params.timing = (TimingMethodID)i;
                 }
             }
         }
@@ -878,13 +878,13 @@ void show_profiler_windows(
             logger_append(l, LOG_LEVEL_ERROR, "Cannot run profiler: Invalid parameters.");
         } else {
             // Allocate space for the new run's results.
-            profiler_result result_tmp = profiler_result_create(next_run_params);
+            ProfilerResult result_tmp = profiler_result_create(next_run_params);
             if (!result_tmp.valid) {
                 logger_append(l, LOG_LEVEL_ERROR,
                               "Failed to allocate memory for new profiler run.");
             } else {
                 static u64 unique_run_id = 1;
-                profrun* run = darray_profrun_push(a, runs);
+                Profrun* run = darray_profrun_push(a, runs);
                 run->id = unique_run_id++;
                 run->state = PROFRUN_PENDING;
                 run->sync = {0};
@@ -1007,9 +1007,9 @@ void show_profiler_windows(
             bool delete_requested = false;
             u64 delete_idx = 0;
             for (usize i = 0; i < runs->len; ++i) {
-                profrun* run = &(runs->data[i]);
-                profiler_result* result = &run->result;
-                profiler_params* p = &run->params;
+                Profrun* run = &(runs->data[i]);
+                ProfilerResult* result = &run->result;
+                ProfilerParams* p = &run->params;
 
                 // The ImGui ID must be tied to the actual result, because the runs may get
                 // deleted and/or reordered, and we want the GUI status (e.g., which treenodes
@@ -1111,7 +1111,7 @@ void show_profiler_windows(
                 ImGui::TableSetColumnIndex(2);
                 // TODO Table column with zoom magnifier. See: Icon fonts (ImGui: FONTS.md);
                 //      Zooming to fit will require storing (double min/max for each axis)
-                //      in the struct profiler_result.
+                //      in the struct ProfilerResult.
                 if (ImGui::Button(ICON_LC_X)) {
                     // TODO Prompt for confirmation, maybe?
                     // Queue deletion for later, so we don't invalidate the loop index.
@@ -1181,7 +1181,7 @@ void show_profiler_windows(
                       ImGuiWindowFlags_None);
 
     for (usize i = 0; i < runs->len; ++i) {
-        profrun* run = &runs->data[i];
+        Profrun* run = &runs->data[i];
         if (run->fresh) {
             if (profrun_actually_visible(run, guiconf->live_view) && guiconf->auto_zoom) {
                 // Set plot axes to fit the bounds of the new data.
@@ -1208,9 +1208,9 @@ void show_profiler_windows(
         ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_NoButtons);
 
         for (usize i = 0; i < runs->len; ++i) {
-            profrun* run = &(runs->data[i]);
-            profiler_params* params = &run->params;
-            profiler_result* result = &run->result;
+            Profrun* run = &(runs->data[i]);
+            ProfilerParams* params = &run->params;
+            ProfilerResult* result = &run->result;
             if (!profrun_actually_visible(run, guiconf->live_view)) {
                 // If we keep going here, the user will see a "live" view of the results as
                 // the profiler thread writes them; however, this is not memory-safe.
@@ -1408,13 +1408,13 @@ int main(int, char**)
     ImGui_ImplOpenGL3_Init(glsl_version);
 
     // Initialize user-facing GUI options.
-    gui_config guiconf = {0};
+    GuiConfig guiconf = {0};
     guiconf.visible_imgui_demo_window = false;
     guiconf.visible_implot_demo_window = false;
     guiconf.visible_imgui_metrics_window = false;
     guiconf.visible_log_window = true;
     //guiconf.visible_profiler_window = true;
-    guiconf.visible_data_individual = true;
+    guiconf.visible_data_individual = false;
     guiconf.visible_data_mean = true;
     guiconf.visible_data_median = false;
     guiconf.visible_data_bounds = true;
@@ -1423,7 +1423,7 @@ int main(int, char**)
     guiconf.live_view = false;
 
     // GUI styling/theme
-    gui_style guistyle;
+    GuiStyle guistyle;
     guistyle.is_dark = false;
     guistyle.font_size_min = 8;
     guistyle.font_size_max = 60;
@@ -1436,9 +1436,9 @@ int main(int, char**)
     bool guistyle_changed = true;
 
     // Global state (non-GUI)
-    logger global_log = logger_create();
-    arena global_arena = arena_create(GLOBAL_ARENA_SIZE);
-    host_info host = {0};
+    Logger global_log = logger_create();
+    Arena global_arena = arena_create(GLOBAL_ARENA_SIZE);
+    HostInfo host = {0};
     darray_profrun profiler_runs = darray_profrun_new(&global_arena, 5);
 
     // Main loop
