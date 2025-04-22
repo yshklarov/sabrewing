@@ -122,13 +122,13 @@ typedef struct
     profiler_result_group* groups;
 
     f32* progress;  // Between 0 and 1.
-    u64* verification_reject_count;
+    u64* verification_accept_count;
 } profiler_result;
 
 typedef struct
 {
-    HANDLE abort_event;
-    HANDLE result_mutex;
+    THREAD_EVENT abort_event;
+    THREAD_MUTEX result_mutex;
 } profiler_sync;
 
 
@@ -198,7 +198,7 @@ profiler_result profiler_result_create(profiler_params params)
     // Result data.
     arena_len_required += params.num_units * sizeof(profiler_result_unit);
     arena_len_required += params.num_groups * sizeof(profiler_result_group);
-    arena_len_required += sizeof(*result.verification_reject_count);
+    arena_len_required += sizeof(*result.verification_accept_count);
     arena_len_required += sizeof(*result.progress);
 
     result.local_arena = arena_create(arena_len_required);
@@ -222,9 +222,9 @@ profiler_result profiler_result_create(profiler_params params)
             &result.local_arena, profiler_result_group, params.num_groups);
     if (!result.groups) goto error_memory;
 
-    result.verification_reject_count = (u64*)arena_push_zero(
-            &result.local_arena, sizeof(*result.verification_reject_count));
-    if (!result.verification_reject_count) goto error_memory;
+    result.verification_accept_count = (u64*)arena_push_zero(
+            &result.local_arena, sizeof(*result.verification_accept_count));
+    if (!result.verification_accept_count) goto error_memory;
     result.progress = (f32*)arena_push_zero(
             &result.local_arena, sizeof(*result.progress));
     if (!result.progress) goto error_memory;
@@ -287,17 +287,19 @@ void update_tsc_frequency(host_info* host, bool first_call)
     }
 }
 
-#ifdef _WIN32
 u64 get_qpc_frequency()
 {
+    #ifdef _WIN32
     // The QPC frequency is fixed at system boot, and guaranteed not to change.
     static LARGE_INTEGER qpc_frequency = {0};
     if (!qpc_frequency.QuadPart) {
         QueryPerformanceFrequency(&qpc_frequency);
     }
     return qpc_frequency.QuadPart;
+    #else
+    return 0;
+    #endif
 }
-#endif
 
 // Return the value of the given timer.
 /* We prevent inlining because the compiler might inline some calls and not others, which would
@@ -334,7 +336,7 @@ u64 get_timer_value(timing_method_id tmid)
     case TIMING_QTCT: {
         #ifdef _WIN32
         u64 time_now;
-        HANDLE current_thread = GetCurrentThread();
+        THREAD current_thread = GetCurrentThread();
         QueryThreadCycleTime(current_thread, &time_now);
         return time_now;
         #else
@@ -345,7 +347,7 @@ u64 get_timer_value(timing_method_id tmid)
     case TIMING_QPCT: {
         #ifdef _WIN32
         u64 time_now;
-        HANDLE current_process = GetCurrentProcess();
+        PROCESS current_process = GetCurrentProcess();
         QueryProcessCycleTime(current_process, &time_now);
         return time_now;
         #else
@@ -436,12 +438,8 @@ void query_host_info(host_info* host)
                 &host->cpu_cache_l1,
                 &host->cpu_cache_l2,
                 &host->cpu_cache_l3);
-        #ifdef _WIN32
         // QPC frequency is fixed at system boot.
         host->qpc_frequency = get_qpc_frequency();
-        #else
-        host->qpc_frequency = 0;
-        #endif
     }
 
     // Measure continually, because (on some systems) it may change, and in any case
@@ -519,11 +517,11 @@ void profiler_execute(
                 if (aborting) break;
 
                 if (params.separate_thread) {
-                    if (WaitForSingleObject(sync.abort_event, 0) == WAIT_OBJECT_0) {
+                    mutex_acquire(sync.result_mutex);
+                    if (event_check(sync.abort_event)) {
                         aborting = true;
                         continue;
                     }
-                    WaitForSingleObject(sync.result_mutex, INFINITE);
                 }
 
                 arena_tmp scratch = scratch_get(NULL, 0);
@@ -566,13 +564,13 @@ void profiler_execute(
 
                 // Verify correctness of output.
                 if (rep == 0 && params.verifier_enabled) {
-                    if (!verifier(
+                    if (verifier(
                                 result.input_clone,  // Input
                                 result.input,        // Output (was created in-place by target)
                                 n,
                                 &rand_state_verifier,
                                 scratch.a)) {
-                        ++(*result.verification_reject_count);
+                        ++(*result.verification_accept_count);
                     }
                 }
                 scratch_release(scratch);
@@ -580,7 +578,7 @@ void profiler_execute(
                 ++invocations_completed;
                 *result.progress = (f32)invocations_completed / (f32)invocations_total;
                 if (params.separate_thread) {
-                    ReleaseMutex(sync.result_mutex);
+                    mutex_release(sync.result_mutex);
                 }
             }
         }
@@ -589,7 +587,7 @@ void profiler_execute(
     // Gather result for plotting.
     if (!aborting) {
         if (params.separate_thread) {
-            WaitForSingleObject(sync.result_mutex, INFINITE);
+            mutex_acquire(sync.result_mutex);
         }
 
         arena_tmp scratch = scratch_get(0, 0);
@@ -615,32 +613,27 @@ void profiler_execute(
         }
         scratch_release(scratch);
         if (params.separate_thread) {
-            ReleaseMutex(sync.result_mutex);
+            mutex_release(sync.result_mutex);
         }
     }
 }
-
-#ifdef _WIN32
-// Windows wrapper for profiler thread.
 
 typedef struct {
     profiler_params params;
     profiler_result result;
     host_info host;
     profiler_sync sync;
-    HANDLE done_copying_args;
+    THREAD_EVENT done_copying_args;
 } profiler_execute_args_struct;
 
-unsigned __stdcall profiler_execute_win32(void* vargs)
+THREAD_ENTRYPOINT profiler_execute_begin(void* vargs)
 {
     profiler_execute_args_struct* args = (profiler_execute_args_struct*)vargs;
     profiler_params params = args->params;
     profiler_result result = args->result;
     host_info host = args->host;
     profiler_sync sync = args->sync;
-    SetEvent(args->done_copying_args);
+    event_signal(args->done_copying_args);
     profiler_execute(params, result, host, sync);
-    _endthreadex(0);
     return 0;
 }
-#endif

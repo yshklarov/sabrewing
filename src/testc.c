@@ -9,8 +9,9 @@
 // Periodically run the following commands to test conformance to C99:
 //
 // Win32:  cl /nologo /W4 /c /FoNUL testc.c
-// Linux:  gcc -Wall -Wextra -Wformat -std=c99 -fsyntax-only testc.c
-// Linux:  clang -Wall -Wextra -Wformat -std=c99 -fsyntax-only testc.c
+// Linux:  gcc -Wall -Wextra -Wformat -std=c99 -D_GNU_SOURCE -fsyntax-only testc.c
+// Linux:  clang -Wall -Wextra -Wformat -std=c99 -D_GNU_SOURCE -fsyntax-only testc.c
+//                                           (-D_GNU_SOURCE is required for pthread extensions)
 //
 // For additional linting:
 //
@@ -18,6 +19,7 @@
 
 
 #include "util.c"
+#include "util_thread.c"
 #include "logger.c"
 #include "cpuinfo.c"
 #include "sort.c"

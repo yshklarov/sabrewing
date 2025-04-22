@@ -25,8 +25,10 @@ OBJS = ${patsubst %.cpp, build/%.o, ${SOURCES}}
 UNAME_S := $(shell uname -s)
 LINUX_GL_LIBS = -lGL
 
-CXXFLAGS = -g -O0 -Wall -Wextra -Wformat -Wno-missing-field-initializers -Wno-missing-braces -std=c++11 $(INCLUDES)
-CXXFLAGS += `sdl2-config --cflags`
+CXXFLAGS  = -std=c++11 -g -O0
+CXXFLAGS += -Wall -Wextra -Wformat -Wno-missing-field-initializers -Wno-missing-braces
+CXXFLAGS += -pthread
+CXXFLAGS += $(INCLUDES) `sdl2-config --cflags`
 CFLAGS = $(CXXFLAGS)
 
 
@@ -41,7 +43,7 @@ CXXFLAGS += -DIMGUI_IMPL_OPENGL_ES2
 ## use the following instead:
 # LINUX_GL_LIBS = -L/opt/vc/lib -lbrcmGLESv2
 
-LIBS += $(LINUX_GL_LIBS) -ldl `sdl2-config --libs`
+LIBS += $(LINUX_GL_LIBS) `sdl2-config --libs`
 
 
 ##---------------------------------------------------------------------

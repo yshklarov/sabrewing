@@ -10,18 +10,13 @@
 #include <SDL_opengl.h>
 #endif
 
-#ifdef _WIN32
-#include <process.h>  // _beginthreadex, _endthreadex
-#else
-#include <pthread.h>  // pthread_create(), etc.
-#endif
-
 #include <inttypes.h>
 #include <stdint.h>
 
 #include "Lucide_Symbols.h"
 
 #include "util.c"
+#include "util_thread.c"
 #include "logger.c"
 #include "cpuinfo.c"
 #include "sort.c"
@@ -75,11 +70,7 @@ typedef struct
 {
     u64 id;  // 1-indexed; id==0 indicates stub (uninitialized, or already destroyed).
     profrun_state state;  // Once PROFRUN_DONE_..., result is safe to read.
-    #ifdef _WIN32
-    HANDLE thread_handle;
-    #else
-    pthread_t thread_handle;
-    #endif
+    THREAD thread_handle;
     profiler_sync sync;
     profiler_params params;
     profiler_result result;  // Written directly by profiler thread: Beware data races.
@@ -152,13 +143,13 @@ void profiler_worker_finish(logger* l, profrun* run)
         run->state = PROFRUN_DONE_FAILURE;
     } else {
         if (run->params.verifier_enabled) {
-            if (*(run->result.verification_reject_count) == 0) {
+            if (*(run->result.verification_accept_count) == run->params.num_units) {
                 logger_appendf(
                         l, LOG_LEVEL_INFO,
                         "(ID %" PRIu64 ") Verification success: Verifier accepted "
                         "%" PRIu64 "/%" PRIu64 " units.",
                         run->id,
-                        run->params.num_units - *(run->result.verification_reject_count),
+                        *(run->result.verification_accept_count),
                         run->params.num_units);
             } else {
                 logger_appendf(
@@ -166,7 +157,7 @@ void profiler_worker_finish(logger* l, profrun* run)
                         "(ID %" PRIu64 ") Verification failure: Verifier accepted "
                         "%" PRIu64 "/%" PRIu64 " units.",
                         run->id,
-                        run->params.num_units - *(run->result.verification_reject_count),
+                        *(run->result.verification_accept_count),
                         run->params.num_units);
             }
         }
@@ -184,6 +175,11 @@ void manage_profiler_workers(
     // Only one worker thread at a time for now, because memory (scratch) arenas are not
     // thread-safe.
     u32 workers_available = 1;
+    #ifndef _WIN32
+    // pthread mutexes and conds must share a single memory location across all threads.
+    static pthread_event_t abort_event;
+    static pthread_mutex_t result_mutex;
+    #endif
     bool state_changed_this_frame = false;
 
     // Take care of already-running worker(s).
@@ -193,26 +189,22 @@ void manage_profiler_workers(
             assertm(run->params.separate_thread, "Worker shouldn't have its own thread.");
             logger_appendf(l, LOG_LEVEL_DEBUG,
                            "(ID %" PRIu64 ") Profiler abort requested.", run->id);
-            SetEvent(run->sync.abort_event);
+            event_signal(run->sync.abort_event);
             run->state = PROFRUN_ABORTING;
             state_changed_this_frame = true;
         }
         if (profrun_busy(run)) {
             assertm(run->params.separate_thread, "Worker shouldn't have its own thread.");
             assertm(workers_available > 0, "Too many profiler workers running.");
-            bool run_completed = false;
-            #ifdef _WIN32
-            // Check without blocking.
-            run_completed = WaitForSingleObject(run->thread_handle, 0) == WAIT_OBJECT_0;
-            #endif
+            bool run_completed = thread_has_joined(run->thread_handle);
             if (!run_completed) {
                 --workers_available;
             } else {
                 #ifdef _WIN32
                 CloseHandle(run->thread_handle);
-                CloseHandle(run->sync.abort_event);
-                CloseHandle(run->sync.result_mutex);
                 #endif
+                event_destroy(run->sync.abort_event);
+                mutex_destroy(run->sync.result_mutex);
                 profiler_worker_finish(l, run);
                 if (run->state == PROFRUN_DONE_ABORTED) {
                     if (profrun_try_delete(l, runs, i)) {
@@ -241,11 +233,13 @@ void manage_profiler_workers(
                            "(ID %" PRIu64 ") Starting profiler run.", run->id);
             if (run->params.separate_thread) {
                 // Create the worker thread.
+
                 #ifdef _WIN32
+
                 run->sync.abort_event = CreateEvent(NULL, TRUE, FALSE, NULL);
                 run->sync.result_mutex = CreateMutex(NULL, FALSE, NULL);
                 // Don't leave this stack frame until the child thread is done with it.
-                HANDLE done_copying_args = CreateEvent(NULL, TRUE, FALSE, NULL);
+                THREAD_EVENT done_copying_args = CreateEvent(NULL, TRUE, FALSE, NULL);
                 profiler_execute_args_struct profiler_args = {
                     run->params,
                     run->result,
@@ -253,8 +247,8 @@ void manage_profiler_workers(
                     run->sync,
                     done_copying_args
                 };
-                run->thread_handle = (HANDLE)_beginthreadex(
-                        NULL, 0, profiler_execute_win32, &profiler_args, CREATE_SUSPENDED, NULL);
+                run->thread_handle = (THREAD)_beginthreadex(
+                        NULL, 0, profiler_execute_begin, &profiler_args, CREATE_SUSPENDED, NULL);
                 if (run->thread_handle == 0) {
                     logger_appendf(l, LOG_LEVEL_ERROR,
                                    "(ID %" PRIu64 ") Failed to start profiler thread.", run->id);
@@ -264,14 +258,45 @@ void manage_profiler_workers(
                     SetThreadPriority(run->thread_handle, THREAD_PRIORITY_TIME_CRITICAL);
                     ResumeThread(run->thread_handle);
                     // Wait until it's safe for profiler_args to go out of scope.
-                    WaitForSingleObject(profiler_args.done_copying_args, INFINITE);
+                    event_wait(profiler_args.done_copying_args);
                     --workers_available;
                     run->state = PROFRUN_RUNNING;
                 }
                 CloseHandle(profiler_args.done_copying_args);
-                profiler_args.done_copying_args = 0;
+
                 #else
-                assertm(false, "Unimplemented: Threads on Linux.");
+                // Linux:
+
+                // Here, unlike in Win32, we can't copy around mutexes and events/conds across
+                // threads: each thread must hold a pointer to a single, shared object.
+                event_initialize(&abort_event);
+                mutex_initialize(&result_mutex);
+                run->sync.abort_event = &abort_event;
+                run->sync.result_mutex = &result_mutex;
+                // Don't leave this stack frame until the child thread is done with it.
+                pthread_event_t done_copying_args;
+                event_initialize(&done_copying_args);
+                profiler_execute_args_struct profiler_args = {
+                    run->params,
+                    run->result,
+                    *host,
+                    run->sync,
+                    &done_copying_args
+                };
+                i32 rtn = pthread_create(
+                        &run->thread_handle, NULL, profiler_execute_begin, &profiler_args);
+                if (rtn != 0) {
+                    logger_appendf(l, LOG_LEVEL_ERROR,
+                                   "(ID %" PRIu64 ") Failed to start profiler thread.", run->id);
+                    run->state = PROFRUN_DONE_FAILURE;
+                } else {
+                    // On Linux, setting high thread priority on threads requires superuser
+                    // permissions, so we skip it.
+                    event_wait(&done_copying_args);  // Don't pop stack frame until it's safe.
+                    --workers_available;
+                    run->state = PROFRUN_RUNNING;
+                }
+
                 #endif
             } else {
                 // User requested to use GUI thread for the profiler.
@@ -801,7 +826,7 @@ void show_profiler_windows(
                 run->id = unique_run_id++;
                 run->state = PROFRUN_PENDING;
                 run->sync = {0};
-                run->thread_handle = NULL;
+                run->thread_handle = 0;
                 run->params = next_run_params;
                 run->result = result_tmp;
                 run->intent_visible = true;
@@ -832,6 +857,8 @@ void show_profiler_windows(
             // TODO Drag & drop results to reorder; support multi-select drag & drop.
             // TODO Magnifier in results list: Auto-zoom to a single results item, and to all.
 
+            bool table_empty = runs->len == 0;
+
             // Table header
 
             ImGui::TableNextRow();
@@ -848,7 +875,7 @@ void show_profiler_windows(
             }
             bool all_intent_visible = num_runs_intent_visible == runs->len;
             // TODO Find, or build, a three-way checkbox with a "partial" setting.
-            ImGui::BeginDisabled(runs->len == 0);
+            ImGui::BeginDisabled(table_empty);
             // Match the size/shape of the checkboxes below.
             f32 checkbox_size = ImGui::GetFrameHeight();
             if (ImGui::Button(ICON_LC_CHART_SPLINE "##AllResultsVisibility",
@@ -869,8 +896,8 @@ void show_profiler_windows(
             // is also not ideal, because the cell is slightly taller than the buttons in the
             // adjacent column headers. Another, related problem: the TreeNode mouseover visual
             // effect is smaller than the ImGuiTableBgTarget_CellBg rectangle.
-            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg,
-                                   ImGui::GetColorU32(ImGuiCol_TableHeaderBg));
+            //ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg,
+            //                       ImGui::GetColorU32(ImGuiCol_Button));
             ImGui::Text("Result Details");
             /*ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_Button));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4(ImGuiCol_Button));
@@ -882,13 +909,13 @@ void show_profiler_windows(
 
             ImGui::TableSetColumnIndex(2);
 
-            ImGui::BeginDisabled(runs->len == 0);
+            ImGui::BeginDisabled(table_empty);
             if (ImGui::Button(ICON_LC_TRASH_2)) {
                 ImGui::OpenPopup("Delete all results");
             }
             ImGui::EndDisabled();
             if (ImGui::BeginPopup("Delete all results", 0)) {
-                if (runs->len == 0) {
+                if (table_empty) {
                     // User already cleared the data in some other way.
                     ImGui::CloseCurrentPopup();
                 }
@@ -904,6 +931,7 @@ void show_profiler_windows(
                             --i;
                         }
                     }
+                    ImGui::CloseCurrentPopup();
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Cancel", popup_button_size)) {
@@ -936,45 +964,48 @@ void show_profiler_windows(
                 ImU32 cell_bg_color = {0};
                 switch (run->state) {
                 case PROFRUN_PENDING: {
-                    cell_bg_color = (ImU32)0x6000FFFF;
+                    cell_bg_color = (ImU32)0x4000FFFF;
                 } break;
                 case PROFRUN_RUNNING: {
-                    cell_bg_color = (ImU32)0x6000FF00;
+                    cell_bg_color = (ImU32)0x40FF8000;
                 } break;
                 case PROFRUN_ABORT_REQUESTED:
                 case PROFRUN_ABORTING: {
-                    cell_bg_color = (ImU32)0x6000A0FF;
+                    cell_bg_color = (ImU32)0x40CC00FF;
                 } break;
                 case PROFRUN_DONE_SUCCESS: {
-                    if (*(result->verification_reject_count) == 0) {
+                    if (*(result->verification_accept_count) == p->num_units) {
+                        // Verifier accepted all units.
                         cell_bg_color = (ImU32)ImGuiCol_Header;
                     } else {
-                        cell_bg_color = (ImU32)0x600000FF;
+                        cell_bg_color = (ImU32)0x400000FF;
                     }
                 } break;
                 case PROFRUN_DONE_FAILURE: {
-                    cell_bg_color = (ImU32)0x60CC00FF;
+                    cell_bg_color = (ImU32)0x40CC00FF;
                 } break;
                 default:
                 case PROFRUN_STATE_MAX: {
-                    cell_bg_color = (ImU32)0x60606060;
+                    cell_bg_color = (ImU32)0xFF808080;
                 } break;
                 }  // switch (run->state)
-                ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, cell_bg_color);
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, cell_bg_color);
 
-                bool tree_node_open  = ImGui::TreeNodeEx(result_name,
-                                      ImGuiTreeNodeFlags_SpanAllColumns |
-                                      ImGuiTreeNodeFlags_SpanAvailWidth |
-                                      ImGuiTreeNodeFlags_AllowOverlap
-                    );
+                bool tree_node_open = ImGui::TreeNodeEx(
+                        result_name,
+                        ImGuiTreeNodeFlags_SpanAllColumns |
+                        ImGuiTreeNodeFlags_SpanAvailWidth |
+                        ImGuiTreeNodeFlags_AllowOverlap);
                 if (profrun_busy(run)) {
                     // Show progress. NOTE This is a memory-unsafe read (may be torn), but we'll
                     // leve it as is because the multithreading is going to be torn out anyway (to
                     // be replaced by multiple processes).
                     ImGui::SameLine();
+                    // Default color for progress bar is ugly orange.
+                    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, (ImU32)0x8000FF00);
                     ImGui::ProgressBar(*(result->progress), ImVec2(-1.0f, 0.0f));
+                    ImGui::PopStyleColor();
                 }
-
 
                 if (tree_node_open) {
                     if (ImGui::Button(ICON_LC_COPY " Again")) {
@@ -1003,7 +1034,7 @@ void show_profiler_windows(
                     ImGui::Text("Verification: %s",
                                 p->verifier_enabled
                                 ? (profrun_done(run)  // Avoid race condition.
-                                   ? (0 == *(result->verification_reject_count)
+                                   ? (p->num_units == *(result->verification_accept_count)
                                       ? ICON_LC_CHECK " Success"
                                       : ICON_LC_X " Failure")
                                    : "Pending")
@@ -1030,6 +1061,13 @@ void show_profiler_windows(
             if (delete_requested) {
                 profrun_try_delete(l, runs, delete_idx);
             }
+            // Autoscroll when user adds new entries, but not when use opens treenodes.
+            static usize prev_table_len = 0;
+            if ((runs->len > prev_table_len) &&
+                (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())) {
+                ImGui::SetScrollHereY(1.0f);
+            }
+            prev_table_len = runs->len;
             ImGui::EndTable();
         }  // table
     }
@@ -1159,7 +1197,8 @@ void show_profiler_windows(
                         sizeof(*result->groups));
             }
 
-            if (guiconf->visible_data_individual) {
+            if (guiconf->visible_data_individual ||
+                (guiconf->live_view && profrun_busy(run))) {
                 // TODO This gets slow when there are more than 50-100,000 points. Either (easiest)
                 // resample (only plot a subset of points), or (better!) implement our own
                 // PlotScatter that doesn't use ImDrawList but instead renders directly using
