@@ -58,17 +58,17 @@ void sort_broken(u32*, u32, rand_state*, arena*);
 void sort_miracle(u32*, u32, rand_state*, arena*);
 static const target_sort targets[] =
 {
-    {"Heapsort", "Builds a max-heap; then repeatedly moves the root to the end.", sort_heap},
-    {"Merge sort", "Sorts each half separately; then merges them.", sort_merge},
-    {"Shellsort", "Insertion-sorts all kth elements, for smaller and smaller k.", sort_shell},
-    {"Quicksort", "Splits the array according to a pivot; then sorts each side.", sort_quick},
+    {"Heapsort", "Builds max-heap, then moves root to end repeatedly.", sort_heap},
+    {"Merge sort", "Sorts each half separately, then merges them.", sort_merge},
+    {"Shellsort", "Insertion-sorts kth items for successively smaller k.", sort_shell},
+    {"Quicksort", "Splits array according to a pivot, then sorts each side.", sort_quick},
     {"Quicksort (randomized)", "Picks the pivot randomly.", sort_quickr},
-    {"Introsort", "Like quicksort, but delegates to heapsort and insertion sort.", sort_intro},
-    {"Insertion sort", "Builds up a sorted array element-by-element.", sort_insertion},
-    {"Selection sort", "Finds least element of those remaining and appends it.", sort_selection},
+    {"Introsort", "Like quicksort, delegating to heap- and insertion sort.", sort_intro},
+    {"Insertion sort", "Builds a sorted array element-by-element.", sort_insertion},
+    {"Selection sort", "Finds least element of those remaining, and appends it.", sort_selection},
     {"Bubble sort", "Compares and swaps adjacent pairs.", sort_bubble},
     {"Gnome sort", "Holds one element, walking left or right.", sort_gnome},
-    {"Simple sort", "Runs in a double (quadratic) loop; comparing and swapping.", sort_simple},
+    {"Simple sort", "Runs in a double loop, comparing and swapping.", sort_simple},
     {"Broken sort", "Deliberately fails occasionally.", sort_broken},
     {"Miracle sort", "Busy-waits for the list to be sorted.", sort_miracle},
 };

@@ -444,13 +444,15 @@ static f32 GetBigButtonHeightWithSpacing()
     return height;
 }
 
-/*bool RightAlignedButton(char const * label) {
+/*bool RightAlignedButton(char const * label)
+{
     f32 width = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - width);
     return ImGui::Button(label);
 }*/
 
-void TextIcon(char const* icon) {
+void TextIcon(char const* icon)
+{
     f32 length = ImGui::GetFrameHeight();  // Always re-fetch, in case user changed it.
     ImGui::BeginChildFrame(ImGui::GetID(icon),
                       {length, length},
@@ -459,6 +461,11 @@ void TextIcon(char const* icon) {
                       ImGuiWindowFlags_NoNav);
     ImGui::TextUnformatted(icon);
     ImGui::EndChild();
+}
+
+void TextIconGhost()
+{
+    ImGui::TextUnformatted("");
 }
 
 /**** Our windows ****/
@@ -526,8 +533,9 @@ void show_profiler_windows(
                       ImVec2(0, -GetBigButtonHeightWithSpacing()));
     {
     if (ImGui::CollapsingHeader("Sampler##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PushID("Sampler");
         TextIcon(ICON_LC_DICES); ImGui::SameLine(icon_width);
-        ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
+        ImGui::PushItemWidth(ImGui::GetFontSize() * 10);
         if (ImGui::BeginCombo("Sampler", samplers[next_run_params.sampler_idx].name, 0)) {
             for (u32 i = 0; i < (u32)ARRAY_SIZE(samplers); i++) {
                 bool is_selected = (next_run_params.sampler_idx == i);
@@ -540,15 +548,17 @@ void show_profiler_windows(
             }
             ImGui::EndCombo();
         }
+        TextIconGhost(); ImGui::SameLine(icon_width);
         ImGui::TextUnformatted(samplers[next_run_params.sampler_idx].description);
         ImGui::PopItemWidth();
         ImGui::Separator();
 
-        ImGui::PushItemWidth(ImGui::GetFontSize() * 12);
+        ImGui::PushItemWidth(ImGui::GetFontSize() * 10);
 
         // TODO Implement our own custom ImGui::DragIntRange2, which supports u64 and a third
         //      "stride" parameter in the middle, and does better bounds checking; then, change
         //      profiler_params to use a range_u32 or range_u64. Do the same for sample_size.
+        TextIcon(ICON_LC_TALLY_5); ImGui::SameLine(icon_width);
         if (ImGui::DragIntRange2(
                     "Array size (n) range", &next_run_params.ns.lower, &next_run_params.ns.upper,
                     20, 0, I32_MAX, "Min: %d", "Max: %d")) {
@@ -556,6 +566,7 @@ void show_profiler_windows(
             range_i32_repair(&next_run_params.ns);
             profiler_params_recompute_invariants(&next_run_params);
         }
+        TextIconGhost(); ImGui::SameLine(icon_width);
         if (ImGui::DragInt(
                     "Array size (n) stride",
                     &next_run_params.ns.stride,
@@ -565,6 +576,7 @@ void show_profiler_windows(
             next_run_params.ns.stride = MAX(1, next_run_params.ns.stride);
             profiler_params_recompute_invariants(&next_run_params);
         }
+        TextIconGhost(); ImGui::SameLine(icon_width);
         if (ImGui::DragInt(
                     "Sample size for each n",
                     &next_run_params.sample_size,
@@ -572,6 +584,7 @@ void show_profiler_windows(
                     ImGuiSliderFlags_AlwaysClamp)) {
             profiler_params_recompute_invariants(&next_run_params);
         }
+        TextIconGhost(); ImGui::SameLine(icon_width);
         ImGui::Text(
                 u8"The sampler will generate %" PRIu64 " × %d = %" PRIu64 " test units.",
                 next_run_params.num_groups,
@@ -588,18 +601,34 @@ void show_profiler_windows(
         if (next_run_params.seed_from_time) {
             next_run_params.seed = rand_get_seed_from_time();
         }
-        ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
+        f32 checkbox_size = ImGui::GetFrameHeight();
+        ImGui::PushItemWidth(ImGui::GetFontSize() * 10 - checkbox_size);
         ImGui::InputScalar(
-                "RNG seed", ImGuiDataType_U64, &next_run_params.seed, NULL, NULL, "%" PRIu64);
+                "##RNG seed", ImGuiDataType_U64, &next_run_params.seed, NULL, NULL, "%" PRIu64);
         ImGui::EndDisabled();
-        ImGui::Checkbox("Seed with current time", &next_run_params.seed_from_time);
+
+        ImGui::PushStyleVarX(ImGuiStyleVar_ItemSpacing, 0.0f);
+        ImGui::SameLine();
+        char const* rng_clock_icon = next_run_params.seed_from_time
+            ? ICON_LC_ALARM_CLOCK "##SeedWithTime" : ICON_LC_ALARM_CLOCK_OFF "##SeedWithTime";
+        if (ImGui::Button(rng_clock_icon,
+                          ImVec2(checkbox_size, checkbox_size))) {
+            next_run_params.seed_from_time = !next_run_params.seed_from_time;
+        }
+        ImGui::PopStyleVar();
+        ImGui::SameLine();
+        ImGui::Text("RNG seed");
+
+        //TextIcon(ICON_LC_CLOCK); ImGui::SameLine(icon_width);
+        //ImGui::Checkbox("Seed with current time", &next_run_params.seed_from_time);
         ImGui::PopItemWidth();
+        ImGui::PopID();
     }
 
     if (ImGui::CollapsingHeader("Target##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
-
+        ImGui::PushID("Target");
         TextIcon(ICON_LC_CROSSHAIR); ImGui::SameLine(icon_width);
-        ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
+        ImGui::PushItemWidth(ImGui::GetFontSize() * 10);
         if (ImGui::BeginCombo("Target", targets[next_run_params.target_idx].name, 0)) {
             for (u32 i = 0; i < (u32)ARRAY_SIZE(targets); i++) {
                 bool is_selected = (next_run_params.target_idx == i);
@@ -612,16 +641,20 @@ void show_profiler_windows(
             }
             ImGui::EndCombo();
         }
+        TextIconGhost(); ImGui::SameLine(icon_width);
         ImGui::TextUnformatted(targets[next_run_params.target_idx].description);
         ImGui::PopItemWidth();
+        ImGui::PopID();
     }
 
     if (ImGui::CollapsingHeader("Verifier##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PushID("Verifier");
+        TextIcon(ICON_LC_LIST_CHECK); ImGui::SameLine(icon_width);
         ImGui::Checkbox("Verify correctness of target output", &next_run_params.verifier_enabled);
         if (next_run_params.verifier_enabled) {
-            TextIcon(ICON_LC_LIST_CHECK); ImGui::SameLine(icon_width);
-            ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
-            ImGui::PushItemWidth(ImGui::GetFontSize() * 12 - icon_width);
+            TextIconGhost(); ImGui::SameLine(icon_width);
+            ImGui::PushItemWidth(ImGui::GetFontSize() * 10);
+            ImGui::PushItemWidth(ImGui::GetFontSize() * 10);
             if (ImGui::BeginCombo("Verifier", verifiers[next_run_params.verifier_idx].name, 0)) {
                 for (u32 i = 0; i < (u32)ARRAY_SIZE(verifiers); i++) {
                     bool is_selected = (next_run_params.verifier_idx == i);
@@ -634,9 +667,11 @@ void show_profiler_windows(
                 }
                 ImGui::EndCombo();
             }
+            TextIconGhost(); ImGui::SameLine(icon_width);
             ImGui::TextUnformatted(verifiers[next_run_params.verifier_idx].description);
             ImGui::PopItemWidth();
         }
+        ImGui::PopID();
     }
 
     if (ImGui::CollapsingHeader("Profiler options##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -669,6 +704,7 @@ void show_profiler_windows(
                 "poor repeatability across identical test runs. Decrease this parameter if you "
                 "are timing a slower algorithm and don't need good repeatability. ");
 
+        TextIconGhost(); ImGui::SameLine(icon_width);
         ImGui::Text(
                 u8"The target will be invoked %" PRIu64 " × %d = %" PRIu64 " times.",
                 next_run_params.num_units,
@@ -678,6 +714,7 @@ void show_profiler_windows(
         ImGui::PopItemWidth();
         ImGui::Separator();
 
+        TextIconGhost(); ImGui::SameLine(icon_width);
         ImGui::Checkbox("Run in separate thread", &next_run_params.separate_thread);
         ImGui::SameLine(); HelpMarker(
                 "Disabling this option will make the results more repeatable, but the GUI will "
@@ -704,12 +741,14 @@ void show_profiler_windows(
             );
         for (i32 i = 0; i < TIMING_METHOD_ID_MAX; ++i) {
             if (timing_methods[i].available[host->os]) {
+                TextIconGhost(); ImGui::SameLine(icon_width);
                 if (ImGui::RadioButton(timing_methods[i].name_long,
                                        next_run_params.timing == (timing_method_id)i)) {
                     next_run_params.timing = (timing_method_id)i;
                 }
             }
         }
+        TextIconGhost(); ImGui::SameLine(icon_width);
         ImGui::Checkbox("Adjust for timer overhead", &next_run_params.adjust_for_timer_overhead);
         ImGui::SameLine(); HelpMarker(
                 "Try to measure, and compensate for, the time required to execute the timing "
@@ -720,6 +759,7 @@ void show_profiler_windows(
 
         TextIcon(ICON_LC_INFO); ImGui::SameLine(icon_width);
         ImGui::Text("Timer information:");
+        TextIconGhost(); ImGui::SameLine(icon_width);
         if (ImGui::BeginTable("TimerInfo", 4, ImGuiTableFlags_SizingFixedFit)) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -757,8 +797,9 @@ void show_profiler_windows(
         }
     }
 
-    if (ImGui::CollapsingHeader("Processor information##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
-        //ImGui::Text(ICON_LC_CPU);
+    if (ImGui::CollapsingHeader("Processor information##Header"
+                                /*, ImGuiTreeNodeFlags_DefaultOpen*/ )) {
+        TextIcon(ICON_LC_CPU); ImGui::SameLine(icon_width);
         if (ImGui::BeginTable("CPUInfo", 2, ImGuiTableFlags_SizingFixedFit)) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0); ImGui::Text("Processor:");
@@ -1350,9 +1391,9 @@ int main(int, char**)
 
     // Initialize user-facing GUI options.
     gui_config guiconf = {0};
-    guiconf.visible_imgui_demo_window = true;
-    guiconf.visible_implot_demo_window = true;
-    guiconf.visible_imgui_metrics_window = true;
+    guiconf.visible_imgui_demo_window = false;
+    guiconf.visible_implot_demo_window = false;
+    guiconf.visible_imgui_metrics_window = false;
     guiconf.visible_log_window = true;
     //guiconf.visible_profiler_window = true;
     guiconf.visible_data_individual = true;
@@ -1464,12 +1505,17 @@ int main(int, char**)
                     ImGui::EndMenu();  // View->Font
                 }
                 ImGui::Separator();
-                ImGui::MenuItem("Log window", NULL, &guiconf.visible_log_window);
-                ImGui::Separator();
-                ImGui::MenuItem("ImGui demo window", NULL, &guiconf.visible_imgui_demo_window);
-                ImGui::MenuItem("ImPlot demo window", NULL, &guiconf.visible_implot_demo_window);
-                ImGui::MenuItem("ImGui metrics window", NULL, &guiconf.visible_imgui_metrics_window);
                 //ImGui::MenuItem("Profiler Window", NULL, &guiconf.visible_profiler_window);
+                ImGui::MenuItem("Log window", NULL, &guiconf.visible_log_window);
+                if (ImGui::BeginMenu("Debug")) {
+                    ImGui::MenuItem("ImGui demo window", NULL,
+                                    &guiconf.visible_imgui_demo_window);
+                    ImGui::MenuItem("ImPlot demo window", NULL,
+                                    &guiconf.visible_implot_demo_window);
+                    ImGui::MenuItem("ImGui metrics window", NULL,
+                                    &guiconf.visible_imgui_metrics_window);
+                    ImGui::EndMenu();
+                }
                 ImGui::EndMenu();  // View
             }
             ImGui::EndMainMenuBar();
