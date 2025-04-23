@@ -1,3 +1,29 @@
+/**** Problem metadata ****/
+
+char const* problem_description()
+{
+    return "Sort an array of 32-bit integers.";
+}
+
+char const* sampler_output_description()
+{
+    return "An array of length n.";
+}
+
+// Bytes required to store input (will be allocated prior to calling sampler).
+u64 input_size(u32 n)
+{
+    return sizeof(u32) * n;
+}
+
+// Bytes required to store output (will be allocated prior to calling target). If this returns 0,
+// then the target will be assumed to operate in-place, and will be passed a null pointer as the
+// output location.
+u64 output_size(u32 n)
+{
+    return 0;
+}
+
 /**** Types ****/
 
 typedef void (*fn_sampler)(u32* data, u32 n, RandState* rs, Arena* scratch);
@@ -70,7 +96,7 @@ static const Target targets[] =
     {"Bubble sort", "Compares and swaps adjacent pairs.", sort_bubble},
     {"Gnome sort", "Holds one element, walking left or right.", sort_gnome},
     {"Simple sort", "Runs in a double loop, comparing and swapping.", sort_simple},
-    {"Broken sort", "Deliberately fails occasionally.", sort_broken},
+    {"Broken sort", "Heapsort, but deliberately fails occasionally.", sort_broken},
     {"Miracle sort", "Busy-waits for the list to be sorted.", sort_miracle},
 };
 

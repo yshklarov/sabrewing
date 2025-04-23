@@ -58,10 +58,8 @@ typedef struct
 typedef struct
 {
     // Sampler parameters
-    // NOTE The ns and sample_size are i32 out of necessity for the time being (ImGui standard
-    // widgets require it); but they should really be u64 instead.
-    range_i32 ns;
-    i32 sample_size;
+    range_u32 ns;
+    u32 sample_size;
     u64 seed;
     bool seed_from_time;
 
@@ -71,23 +69,23 @@ typedef struct
     bool verifier_enabled;
     u32 verifier_idx;
     bool separate_thread;
-    i32 warmup_ms;
+    u32 warmup_ms;
     //repeat_method repeat;
-    i32 repetitions;
+    u32 repetitions;
     TimingMethodID timing;
     bool adjust_for_timer_overhead;
 
     // Computed parameters (invariants):
     // num_groups == range_count(ns).
-    u64 num_groups;
+    u32 num_groups;
     // num_units == num_groups * sample_size, or 0 in case of integer overflow.
-    u64 num_units;
+    u32 num_units;
 }  ProfilerParams;
 
 typedef struct
 {
     RandState seed;  // (sizeof u64)*4 = 32 bytes
-    f64 n;
+    f64 n;     // Floating-point for now, to satisfy ImPlot.
     f64 time;  // nanoseconds
     // Tracking this so the input may be re-created at user's request.
 } ProfilerResultUnit;
@@ -123,7 +121,7 @@ typedef struct
     ProfilerResultGroup* groups;
 
     f32* progress;  // Between 0 and 1.
-    u64* verification_accept_count;
+    u32* verification_accept_count;
 } ProfilerResult;
 
 typedef struct
@@ -136,9 +134,9 @@ typedef struct
 /**** Functions ****/
 
 void profiler_params_recompute_invariants(ProfilerParams* params) {
-    params->num_groups = range_i32_count(params->ns);
+    params->num_groups = range_u32_count(params->ns);
     // Check for integer overflow.
-    if ((u64)params->num_groups * (u64)params->sample_size <= (u64)I32_MAX) {
+    if ((u64)params->num_groups * (u64)params->sample_size <= (u64)U32_MAX) {
         params->num_units = params->num_groups * params->sample_size;
     } else {
         params->num_units = 0;
@@ -223,7 +221,7 @@ ProfilerResult profiler_result_create(ProfilerParams params)
             &result.local_arena, ProfilerResultGroup, params.num_groups);
     if (!result.groups) goto error_memory;
 
-    result.verification_accept_count = (u64*)arena_push_zero(
+    result.verification_accept_count = (u32*)arena_push_zero(
             &result.local_arena, sizeof(*result.verification_accept_count));
     if (!result.verification_accept_count) goto error_memory;
     result.progress = (f32*)arena_push_zero(
@@ -514,7 +512,7 @@ void profiler_execute(
 {
     f64 timer_period_ns = 1.0e9 / (f64)get_timer_frequency(params.timing, &host);
 
-    u64 sample_size = params.sample_size;  // For brevity.
+    u32 sample_size = params.sample_size;  // For brevity.
     fn_sampler sampler = samplers[params.sampler_idx].fn;
     fn_target target = targets[params.target_idx].fn;
     fn_verifier verifier = verifiers[params.verifier_idx].fn;
@@ -540,20 +538,20 @@ void profiler_execute(
     }
 
     u64 invocations_completed = 0;
-    u64 invocations_total = params.num_units * params.repetitions;
+    u64 invocations_total = (u64)params.num_units * (u64)params.repetitions;
 
     bool aborting = false;
-    for (i32 rep = 0; rep < params.repetitions; ++rep) {
+    for (u32 rep = 0; rep < params.repetitions; ++rep) {
         if (aborting) break;
 
         // Each repetition must use the same sample, so we re-seed here.
         RandState rand_state_local = {0};
         rand_init_from_seed(&rand_state_local, params.seed);
 
-        loop_over_range_i32(params.ns, n, n_idx) {
+        loop_over_range_u32(params.ns, n, n_idx) {
             if (aborting) break;
 
-            for (u64 i = 0; i < (u64)sample_size; ++i) {
+            for (u32 i = 0; i < sample_size; ++i) {
                 if (aborting) break;
 
                 if (params.separate_thread) {
@@ -632,10 +630,10 @@ void profiler_execute(
 
         ArenaTmp scratch = scratch_get(0, 0);
         f64* times = arena_push_array_zero(scratch.a, f64, sample_size);
-        loop_over_range_i32(params.ns, n, n_idx) {
+        loop_over_range_u32(params.ns, n, n_idx) {
             result.groups[n_idx].n = (f64)n;
             result.groups[n_idx].time_mean = 0;
-            for (u64 i = 0; i < (u64)sample_size; ++i) {
+            for (u32 i = 0; i < sample_size; ++i) {
                 times[i] = result.units[n_idx * sample_size + i].time;
                 result.groups[n_idx].time_mean += times[i];
             }

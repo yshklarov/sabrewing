@@ -151,24 +151,26 @@ T range_##T##_count(range_##T r) {                                      \
 }                                                                       \
 void range_##T##_repair(range_##T * r)                                  \
 {                                                                       \
-    r->lower = MAX(0, r->lower);                                        \
-    r->upper = MAX(0, r->upper);                                        \
     r->stride = MAX(1, r->stride);                                      \
     if (r->lower > r->upper) {                                          \
         r->upper = r->lower;                                            \
     }                                                                   \
+}                                                                       \
+void range_##T##_clamp(range_##T * r, T min, T max)                     \
+{                                                                       \
+    r->lower = CLAMP(r->lower, min, max);                               \
+    r->upper = CLAMP(r->upper, min, max);                               \
 }
 FOR_INTEGER_TYPES
 #undef X
 
-// Macro user must provide an extra enclosing block scope. Arguments must be individual keywords.
-#define loop_over_range_i32(_r, _n, _n_idx)     \
-    u64 _n_idx = 0;                             \
-    i32 _n;                                     \
-    u64 _n_count = (u64)range_i32_count(_r);    \
-    for (_n_idx = 0, _n = _r.lower;             \
-         _n_idx < _n_count;                     \
-         ++n_idx, n += _r.stride)
+#define loop_over_range_u32(_r, _n, _n_idx)     \
+    u32 (_n_idx) = 0;                           \
+    u32 (_n);                                   \
+    u32 _n_count = range_u32_count(_r);         \
+    for ((_n_idx) = 0, (_n) = (_r).lower;       \
+         (_n_idx) < _n_count;                   \
+         ++(n_idx), n += (_r).stride)
 
 // x must be unsigned; k must satisfy 0 <= k < 32
 #define ROT32(x,k) (((x)<<(k))|((x)>>(32-(k))))

@@ -1,4 +1,5 @@
 #include "imgui.h"
+#include "imgui_internal.h"    // For extending ImGui with custom widgets.
 #define WIN32_LEAN_AND_MEAN    // Exclude rarely-used definitions.
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_opengl3.h"
@@ -160,16 +161,14 @@ void profiler_worker_finish(Logger* l, Profrun* run)
             if (*(run->result.verification_accept_count) == run->params.num_units) {
                 logger_appendf(
                         l, LOG_LEVEL_INFO,
-                        "(ID %" PRIu64 ") Verification success: Verifier accepted "
-                        "%" PRIu64 "/%" PRIu64 " units.",
+                        "(ID %" PRIu64 ") Verification success: Verifier accepted %u/%u units.",
                         run->id,
                         *(run->result.verification_accept_count),
                         run->params.num_units);
             } else {
                 logger_appendf(
                         l, LOG_LEVEL_INFO,
-                        "(ID %" PRIu64 ") Verification failure: Verifier accepted "
-                        "%" PRIu64 "/%" PRIu64 " units.",
+                        "(ID %" PRIu64 ") Verification failure: Verifier accepted %u/%u units.",
                         run->id,
                         *(run->result.verification_accept_count),
                         run->params.num_units);
@@ -431,7 +430,7 @@ void set_imgui_style(Logger* l, ImGuiIO* io, bool is_dark, u8 font_size)
     }
 }
 
-/**** ImGui assistant functions ****/
+/**** ImGui helper functions and custom widgets ****/
 
 // Show tooltip (stolen from imgui_demo.cpp).
 static void HelpMarker(const char* desc)
@@ -485,6 +484,80 @@ void TextIconGhost()
 {
     ImGui::TextUnformatted("");
 }
+
+// Copied from imgui_widgets.cpp and modified for our purposes.
+// Guaranteed to clamp to bounds (even on user ctrl-input).
+bool ImGuiDragU32(
+        const char* label,
+        u32* v,
+        f32 v_speed = 1.0f,
+        u32 v_min = 0, u32 v_max = U32_MAX,
+        const char* format = "%u",
+        ImGuiSliderFlags flags = 0) {
+    flags |= ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_ClampZeroRange;
+    bool modified = ImGui::DragScalar(label, ImGuiDataType_U32, v, v_speed,
+                                      &v_min, &v_max, format, flags);
+    if (modified) {
+        // Don't trust ImGui; do it ourselves to be certain.
+        *v = CLAMP(*v, v_min, v_max);
+    }
+    return modified;
+}
+
+
+// Copied from imgui_widgets.cpp and modified for our purposes.
+// Guaranteed to leave v_current within bounds, and guaranteed to leave it as a valid range.
+bool ImGuiDragRangeWithStride(
+        const char* label,
+        range_u32* v_current,
+        f32 v_speed_bounds = 1.0f, f32 v_speed_stride = 1.0f,
+        u32 v_min_bounds = 0, u32 v_max_bounds = 0,
+        u32 v_min_stride = 1, u32 v_max_stride = U32_MAX,
+        const char* format_lower = "%u",
+        const char* format_stride = "%u",
+        const char* format_upper = "%u",
+        ImGuiSliderFlags flags = 0)
+{
+    ImGuiStyle& style = ImGui::GetStyle();
+    bool value_changed = false;
+    flags |= ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_ClampZeroRange;
+    ImGui::PushID(label);
+    ImGui::BeginGroup();
+    ImGui::PushMultiItemsWidths(3, ImGui::CalcItemWidth());
+
+    if (ImGuiDragU32("##lower", &v_current->lower, v_speed_bounds,
+                v_min_bounds, v_current->upper, format_lower, flags)) {
+        value_changed = true;
+        v_current->upper = MAX(v_current->lower, v_current->upper);
+    }
+    ImGui::PopItemWidth();
+    ImGui::SameLine(0, style.ItemInnerSpacing.x);
+
+    if (ImGuiDragU32("##stride", &v_current->stride, v_speed_stride,
+                v_min_stride, v_max_stride, format_stride, flags)) {
+        value_changed = true;
+    }
+    ImGui::PopItemWidth();
+    ImGui::SameLine(0, style.ItemInnerSpacing.x);
+
+    if (ImGuiDragU32("##upper", &v_current->upper, v_speed_bounds,
+                v_current->lower, v_max_bounds, format_upper, flags)) {
+        value_changed = true;
+        v_current->lower = MIN(v_current->lower, v_current->upper);
+    }
+    ImGui::PopItemWidth();
+    ImGui::SameLine(0, style.ItemInnerSpacing.x);
+
+    ImGui::TextEx(label, ImGui::FindRenderedTextEnd(label));
+    ImGui::EndGroup();
+    ImGui::PopID();
+
+    // Don't trust the ImGui widgets; do it ourselves to be very sure.
+    range_u32_clamp(v_current, v_min_bounds, v_max_bounds);
+    range_u32_repair(v_current);
+    return value_changed;
+}
+
 
 /**** Our windows ****/
 
@@ -546,14 +619,21 @@ void show_profiler_windows(
     static ProfilerParams next_run_params = profiler_params_default();
 
     f32 icon_width = ImGui::GetFrameHeightWithSpacing();
+    f32 option_width = ImGui::GetFontSize() * 12;
 
     ImGui::BeginChild("ProfilerParamsConfigurationChild",
                       ImVec2(0, -GetBigButtonHeightWithSpacing()));
     {
+    if (ImGui::CollapsingHeader("Problem##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PushID("Problem");
+        TextIcon(ICON_LC_BOX); ImGui::SameLine(icon_width);
+        ImGui::Text("%s", problem_description());
+        ImGui::PopID();
+    }
     if (ImGui::CollapsingHeader("Sampler##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::PushID("Sampler");
         TextIcon(ICON_LC_DICES); ImGui::SameLine(icon_width);
-        ImGui::PushItemWidth(ImGui::GetFontSize() * 10);
+        ImGui::PushItemWidth(option_width);
         if (ImGui::BeginCombo("Sampler", samplers[next_run_params.sampler_idx].name, 0)) {
             for (u32 i = 0; i < (u32)ARRAY_SIZE(samplers); i++) {
                 bool is_selected = (next_run_params.sampler_idx == i);
@@ -568,47 +648,40 @@ void show_profiler_windows(
         }
         TextIconGhost(); ImGui::SameLine(icon_width);
         ImGui::TextUnformatted(samplers[next_run_params.sampler_idx].description);
+        TextIconGhost(); ImGui::SameLine(icon_width);
+        ImGui::Text("Output: %s", sampler_output_description());
         ImGui::PopItemWidth();
         ImGui::Separator();
 
-        ImGui::PushItemWidth(ImGui::GetFontSize() * 10);
+        ImGui::PushItemWidth(option_width);
 
-        // TODO Implement our own custom ImGui::DragIntRange2, which supports u64 and a third
-        //      "stride" parameter in the middle, and does better bounds checking; then, change
-        //      ProfilerParams to use a range_u32 or range_u64. Do the same for sample_size.
         TextIcon(ICON_LC_TALLY_5); ImGui::SameLine(icon_width);
-        if (ImGui::DragIntRange2(
-                    "Array size (n) range", &next_run_params.ns.lower, &next_run_params.ns.upper,
-                    20, 0, I32_MAX, "Min: %d", "Max: %d")) {
-            // Workarounds for imgui input bugs.
-            range_i32_repair(&next_run_params.ns);
+        if (ImGuiDragRangeWithStride(
+                    "Range for n",
+                    &next_run_params.ns,
+                    10.0f, 1.0f,
+                    0, U32_MAX,
+                    1, U32_MAX,
+                    "Min: %u",
+                    "Stride: %u",
+                    "Max: %u")) {
             profiler_params_recompute_invariants(&next_run_params);
         }
+
         TextIconGhost(); ImGui::SameLine(icon_width);
-        if (ImGui::DragInt(
-                    "Array size (n) stride",
-                    &next_run_params.ns.stride,
-                    1, 1, I32_MAX, "%d",
-                    ImGuiSliderFlags_AlwaysClamp)) {
-            // I don't trust the ImGui widgets to be bug-free.
-            next_run_params.ns.stride = MAX(1, next_run_params.ns.stride);
-            profiler_params_recompute_invariants(&next_run_params);
-        }
-        TextIconGhost(); ImGui::SameLine(icon_width);
-        if (ImGui::DragInt(
+        if (ImGuiDragU32(
                     "Sample size for each n",
                     &next_run_params.sample_size,
-                    1, 1, I32_MAX, "%d",
+                    1, 1, U32_MAX, "%u",
                     ImGuiSliderFlags_AlwaysClamp)) {
             profiler_params_recompute_invariants(&next_run_params);
         }
         TextIconGhost(); ImGui::SameLine(icon_width);
         ImGui::Text(
-                u8"The sampler will generate %" PRIu64 " × %d = %" PRIu64 " test units.",
+                u8"Sampler will be invoked %u × %u = %u times.",
                 next_run_params.num_groups,
                 next_run_params.sample_size,
                 next_run_params.num_units);
-        //ImGui::Text("Input to algorithm: Shuffled array of u32 of length n.");
         ImGui::PopItemWidth();
 
         ImGui::Separator();
@@ -620,7 +693,7 @@ void show_profiler_windows(
             next_run_params.seed = rand_get_seed_from_time();
         }
         f32 checkbox_size = ImGui::GetFrameHeight();
-        ImGui::PushItemWidth(ImGui::GetFontSize() * 10 - checkbox_size);
+        ImGui::PushItemWidth(option_width - checkbox_size);
         ImGui::InputScalar(
                 "##RNG seed", ImGuiDataType_U64, &next_run_params.seed, NULL, NULL, "%" PRIu64);
         ImGui::EndDisabled();
@@ -646,7 +719,7 @@ void show_profiler_windows(
     if (ImGui::CollapsingHeader("Target##Header", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::PushID("Target");
         TextIcon(ICON_LC_CROSSHAIR); ImGui::SameLine(icon_width);
-        ImGui::PushItemWidth(ImGui::GetFontSize() * 10);
+        ImGui::PushItemWidth(option_width);
         if (ImGui::BeginCombo("Target", targets[next_run_params.target_idx].name, 0)) {
             for (u32 i = 0; i < (u32)ARRAY_SIZE(targets); i++) {
                 bool is_selected = (next_run_params.target_idx == i);
@@ -671,8 +744,7 @@ void show_profiler_windows(
         ImGui::Checkbox("Verify correctness of target output", &next_run_params.verifier_enabled);
         if (next_run_params.verifier_enabled) {
             TextIconGhost(); ImGui::SameLine(icon_width);
-            ImGui::PushItemWidth(ImGui::GetFontSize() * 10);
-            ImGui::PushItemWidth(ImGui::GetFontSize() * 10);
+            ImGui::PushItemWidth(option_width);
             if (ImGui::BeginCombo("Verifier", verifiers[next_run_params.verifier_idx].name, 0)) {
                 for (u32 i = 0; i < (u32)ARRAY_SIZE(verifiers); i++) {
                     bool is_selected = (next_run_params.verifier_idx == i);
@@ -696,10 +768,10 @@ void show_profiler_windows(
         ImGui::PushItemWidth(ImGui::GetFontSize() * 3);
 
         TextIcon(ICON_LC_COFFEE); ImGui::SameLine(icon_width);
-        ImGui::DragInt(
+        ImGuiDragU32(
                 "Warmup (ms)",
                 &next_run_params.warmup_ms,
-                1.0f, 0, I32_MAX, "%d",
+                10.0f, 0, U32_MAX, "%u",
                 ImGuiSliderFlags_AlwaysClamp);
         ImGui::SameLine(); HelpMarker(
                 "Perform dummy computations to induce a transition to the boost frequency "
@@ -708,25 +780,33 @@ void show_profiler_windows(
                 "Set this to zero if the processor doesn't support dynamic frequency scaling. ");
 
         TextIcon(ICON_LC_REPEAT); ImGui::SameLine(icon_width);
-        ImGui::DragInt(
+        ImGuiDragU32(
                 "Repetitions",
                 &next_run_params.repetitions,
-                1, 1, I32_MAX, "%d",
+                1, 1, U32_MAX, "%u",
                 ImGuiSliderFlags_AlwaysClamp);
         ImGui::SameLine(); HelpMarker(
                 "Perform the entire test run multiple times, using the same inputs, storing "
                 "only the minimum time measured for each test unit (i.e., for each input). "
-                "This serves to discard faulty measurements due to thread and process pre-empting."
+                "This serves to discard faulty measurements due to thread and process pre-empting. "
+                "Repetitions will be done serially: The entire run will be performed, and then "
+                "the seed will be reset to its initial value and the run will start over. "
                 "\n\n"
-                "Increase this parameter if you need high-precision measurements, and you observe "
+                "Increase this parameter if you need high-precision measurements but observe "
                 "poor repeatability across identical test runs. Decrease this parameter if you "
-                "are timing a slower algorithm and don't need good repeatability. ");
+                "are timing a slower algorithm and don't require good repeatability. "
+                "\n\n"
+                "Beware: If you are making very brief runs, repetitions will yield artificially "
+                "low computation times. This is (presumably) because the CPU is caching the entire "
+                "computation in its branch predictor. If you experience this problem, increase "
+                "the sample size.");
 
         TextIconGhost(); ImGui::SameLine(icon_width);
         ImGui::Text(
-                u8"The target will be invoked %" PRIu64 " × %d = %" PRIu64 " times.",
+                u8"The target will be invoked %u × %u = %" PRIu64 " times.",
                 next_run_params.num_units,
                 next_run_params.repetitions,
+                // NOTE Things like this should be computed not here, but in a lower layer.
                 (u64)next_run_params.num_units * (u64)next_run_params.repetitions);
 
         ImGui::PopItemWidth();
@@ -757,7 +837,7 @@ void show_profiler_windows(
                 "to the profiler target, so its output data will be higher. These two methods "
                 "may fail to convert to accurate wall time. "
             );
-        for (i32 i = 0; i < TIMING_METHOD_ID_MAX; ++i) {
+        for (u32 i = 0; i < TIMING_METHOD_ID_MAX; ++i) {
             if (timing_methods[i].available[host->os]) {
                 TextIconGhost(); ImGui::SameLine(icon_width);
                 if (ImGui::RadioButton(timing_methods[i].name_long,
@@ -1003,7 +1083,7 @@ void show_profiler_windows(
                 ImGui::Text("Delete all results?");
                 if (ImGui::Button("Confirm", popup_button_size)) {
                     logger_appendf(l, LOG_LEVEL_DEBUG,
-                                   "User requested deletion of all %d profiler run%s.",
+                                   "User requested deletion of all %u profiler run%s.",
                                    runs->len,
                                    (runs->len == 1) ? "" : "s");
                     for (usize i = 0; i < runs->len; ++i) {
@@ -1023,7 +1103,7 @@ void show_profiler_windows(
             // Table contents
 
             bool delete_requested = false;
-            u64 delete_idx = 0;
+            usize delete_idx = 0;
             for (usize i = 0; i < runs->len; ++i) {
                 Profrun* run = &(runs->data[i]);
                 ProfilerResult* result = &run->result;
@@ -1054,10 +1134,11 @@ void show_profiler_windows(
                     cell_bg_color = (ImU32)0x40CC00FF;
                 } break;
                 case PROFRUN_DONE_SUCCESS: {
-                    if (*(result->verification_accept_count) == p->num_units) {
-                        // Verifier accepted all units.
+                    if (!(p->verifier_enabled) ||
+                        *(result->verification_accept_count) == p->num_units) {
                         cell_bg_color = (ImU32)ImGuiCol_Header;
                     } else {
+                        // Verifier failed to accept all units.
                         cell_bg_color = (ImU32)0x400000FF;
                     }
                 } break;
@@ -1094,10 +1175,10 @@ void show_profiler_windows(
                     ImGui::SameLine();
                     HelpMarker("Re-load these parameters to use for the next run.");
                     ImGui::Text("Sampler: %s", samplers[p->sampler_idx].name);
-                    ImGui::Text("Range: (%d, %d, %d)", p->ns.lower, p->ns.stride, p->ns.upper);
+                    ImGui::Text("Range: (%u, %u, %u)", p->ns.lower, p->ns.stride, p->ns.upper);
 
-                    ImGui::Text("Sample size: %d", p->sample_size);
-                    ImGui::Text("Total units: %" PRIu64, p->num_units);
+                    ImGui::Text("Sample size: %u", p->sample_size);
+                    ImGui::Text("Total units: %u", p->num_units);
                     ImGui::Text("Seed: %" PRIu64, p->seed);
                     /*  // Copy to clipboard -- works, but is very ugly.
                     ImGui::SameLine();
@@ -1110,7 +1191,7 @@ void show_profiler_windows(
                     }
                     */
                     ImGui::Text("Timing: %s", timing_methods[p->timing].name_short);
-                    ImGui::Text("Repetitions: %d", p->repetitions);
+                    ImGui::Text("Repetitions: %u", p->repetitions);
                     ImGui::Text("Verification: %s",
                                 p->verifier_enabled
                                 ? (profrun_done(run)  // Avoid race condition.
@@ -1245,6 +1326,8 @@ void show_profiler_windows(
                         &result->groups[0].n,
                         &result->groups[0].time_min,
                         &result->groups[0].time_max,
+                        // NOTE ImPlot requires i32; this is possibly a bug for us, but
+                        // we won't be using ImPlot forever so we won't bother fixing this.
                         (i32)params->num_groups,
                         0,
                         0,
@@ -1282,7 +1365,7 @@ void show_profiler_windows(
                 // TODO This gets slow when there are more than 50-100,000 points. Either (easiest)
                 // resample (only plot a subset of points), or (better!) implement our own
                 // PlotScatter that doesn't use ImDrawList but instead renders directly using
-                // graphics shaders; this will also let us use custom/mixed types (u64 for n and
+                // graphics shaders; this will also let us use custom/mixed types (u32/u64 for n and
                 // float for vertical axis).
 
                 // NOTE ImPlotMarker_Circle looks nicer than ImPlotMarker_Cross, but 3 times slower.
