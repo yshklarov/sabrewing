@@ -30,6 +30,7 @@
 
 /**** Types ****/
 
+// The user's settings for the GUI's behavior.
 typedef struct
 {
     bool visible_imgui_demo_window;
@@ -45,6 +46,7 @@ typedef struct
     bool log_show_timestamps;
 } GuiConfig;
 
+// The user's settings for the GUI's styling.
 typedef struct
 {
     bool is_dark;
@@ -54,42 +56,52 @@ typedef struct
     u8 font_size_max;
 } GuiStyle;
 
+// The state of a single profiler run.
 typedef enum
 {
-    PROFRUN_PENDING,
-    PROFRUN_RUNNING,
-    PROFRUN_ABORT_REQUESTED,
-    PROFRUN_ABORTING,
-    PROFRUN_DONE_SUCCESS,
-    PROFRUN_DONE_FAILURE,
-    PROFRUN_DONE_ABORTED,
+    PROFRUN_PENDING,       // The user has queued the run, and it has been created, but the profiler has
+                           // not yet begun executing it.
+    PROFRUN_RUNNING,       // The profiler is currently executing the run normally.
+    PROFRUN_ABORT_REQD,    // The user has commanded an abort in the middle of profiling.
+    PROFRUN_ABORTING,      // An abort request has been sent to the profiler.
+    PROFRUN_DONE_SUCCESS,  // The profiler has successfully completed and exited.
+    PROFRUN_DONE_FAILURE,  // The profiler has encountered a system error and exited. (Note that a
+                           // verifier's rejection of a target's output is not considered an error.)
+    PROFRUN_DONE_ABORTED,  // The profiler has aborted and exited.
     PROFRUN_STATE_MAX,
 } ProfRunState;
 
+// A Profrun (profiler run) stores metadata about a profiler run; it is created as soon as the user
+// queues up a run and persists until the user aborts or deletes the run (exposed as a "result" in
+// the GUI). The data is accessed through pointers in the ProfilerResult member. This way, the
+// Profrun objects can be moved (reordered) by the front-end while the profiler thread/process is
+// writing data into the result.
 typedef struct
 {
-    u64 id;  // 1-indexed; id==0 indicates stub (uninitialized, or already destroyed).
-    ProfRunState state;  // Once PROFRUN_DONE_..., result is safe to read.
-    THREAD thread_handle;
-    ProfilerSync sync;
+    u64 id;  // Unique; 1-indexed; id==0 indicates stub (uninitialized, or already destroyed).
+    ProfRunState state;     // Once this is PROFRUN_DONE_..., `result` is safe to read.
+    THREAD thread_handle;   // A handle to the profiler thread/process.
+    ProfilerSync sync;      // For talking with the profiler thread/process.
     ProfilerParams params;
     ProfilerResult result;  // Written directly by profiler thread: Beware data races.
-    bool intent_visible;
-    bool fresh;
+    bool intent_visible;    // The user wants to visualize the results of this run.
+    bool fresh;             // Completed, but result not yet displayed to the user.
 } Profrun;
 typedef_darray(Profrun, profrun);
 
 
 /****  Functions ****/
 
+// Return true if the profiler is currently executing the run.
 bool profrun_busy(Profrun* run)
 {
     return
         run->state == PROFRUN_RUNNING ||
-        run->state == PROFRUN_ABORT_REQUESTED ||
+        run->state == PROFRUN_ABORT_REQD ||
         run->state == PROFRUN_ABORTING;
 }
 
+// Return true if the profiler has already exited from this run.
 bool profrun_done(Profrun* run)
 {
     return
@@ -98,16 +110,16 @@ bool profrun_done(Profrun* run)
         run->state == PROFRUN_DONE_ABORTED;
 }
 
-// Deletes the Profrun immediately if possible, or sets the thread to abort if it's running.
+// Delete the Profrun immediately if possible, or ask the thread to abort if it's running.
 // Return true if deleted.
 bool profrun_try_delete(Logger* l, darray_profrun* runs, usize idx)
 {
     bool deleted = false;
     switch (runs->data[idx].state) {
     case PROFRUN_RUNNING: {
-        runs->data[idx].state = PROFRUN_ABORT_REQUESTED;
+        runs->data[idx].state = PROFRUN_ABORT_REQD;
     } break;
-    case PROFRUN_ABORT_REQUESTED:
+    case PROFRUN_ABORT_REQD:
     case PROFRUN_ABORTING: {
         // Still waiting for thread to abort; do nothing.
     } break;
@@ -134,6 +146,8 @@ bool profrun_actually_visible(Profrun* run, bool live_view)
     return data_available && run->intent_visible;
 }
 
+// Perform some state transitions, logging, and basic cleanup.
+// This function should be called after the profiler exits the run.
 void profiler_worker_finish(Logger* l, Profrun* run)
 {
     if (run->state == PROFRUN_ABORTING) {
@@ -167,6 +181,8 @@ void profiler_worker_finish(Logger* l, Profrun* run)
     }
 }
 
+// This function should be invoked frequently, to perform bookkeeping on `runs` and their associated
+// profiler threads/process(es).
 void manage_profiler_workers(
         Logger* l,
         HostInfo* host,
@@ -185,7 +201,7 @@ void manage_profiler_workers(
     // Take care of already-running worker(s).
     for (usize i = 0; i < runs->len; ++i) {
         Profrun* run = &runs->data[i];
-        if (run->state == PROFRUN_ABORT_REQUESTED) {
+        if (run->state == PROFRUN_ABORT_REQD) {
             assertm(run->params.separate_thread, "Worker shouldn't have its own thread.");
             logger_appendf(l, LOG_LEVEL_DEBUG,
                            "(ID %" PRIu64 ") Profiler abort requested.", run->id);
@@ -312,6 +328,8 @@ void manage_profiler_workers(
     }
 }
 
+// Update the ImGUI style and fonts. This function should be called after the user modifies
+// the arguments, between ImGui frames.
 void set_imgui_style(Logger* l, ImGuiIO* io, bool is_dark, u8 font_size)
 {
     // TODO Note ImGui has an experimental feature, branch feature/dynamic_fonts, as of 2025-03-05,
@@ -1031,7 +1049,7 @@ void show_profiler_windows(
                 case PROFRUN_RUNNING: {
                     cell_bg_color = (ImU32)0x40FF8000;
                 } break;
-                case PROFRUN_ABORT_REQUESTED:
+                case PROFRUN_ABORT_REQD:
                 case PROFRUN_ABORTING: {
                     cell_bg_color = (ImU32)0x40CC00FF;
                 } break;
@@ -1471,7 +1489,6 @@ int main(int, char**)
         }
 
         // Update styles. Note that the font must be set before ImGui::NewFrame(). (??)
-        // TODO Detect DPI changes and set style/scaling appropriately. See:
         if (guistyle_changed) {
             set_imgui_style(&global_log, &io, guistyle.is_dark, guistyle.font_size);
             guistyle_changed = false;
