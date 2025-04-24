@@ -19,8 +19,8 @@ SOURCES_IMPLOT = $(IMPLOT_DIR)/implot.cpp $(IMPLOT_DIR)/implot_demo.cpp $(IMPLOT
 SOURCES_EXT = $(SOURCES_IMGUI) $(SOURCES_IMPLOT)
 SOURCES = $(SRC_DIR)/gui.cpp
 
-OBJS_EXT = ${patsubst %.cpp, build/%.o, ${SOURCES_EXT}}
-OBJS = ${patsubst %.cpp, build/%.o, ${SOURCES}}
+OBJS_EXT = ${patsubst %.cpp, $(BUILD_DIR)/%.o, ${SOURCES_EXT}}
+OBJS = ${patsubst %.cpp, $(BUILD_DIR)/%.o, ${SOURCES}}
 
 UNAME_S := $(shell uname -s)
 LINUX_GL_LIBS = -lGL
@@ -50,15 +50,22 @@ LIBS += $(LINUX_GL_LIBS) `sdl2-config --libs`
 ## BUILD RULES
 ##---------------------------------------------------------------------
 
+# This is sloppy and doesn't include updates for all source dependencies. Fix me!
+
+all: $(BIN_MAIN) copy_files
+
 $(BUILD_DIR)/%.o : %.cpp
+	mkdir -p $(BUILD_DIR)
 	mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 $(BIN_MAIN): $(OBJS) $(OBJS_EXT)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
 
-all: $(BIN_MAIN)
-	@echo Build complete
+copy_files:
+	mkdir -p $(BUILD_DIR)/$(FONTS_DIR)
+	cp -r $(FONTS_DIR)/* $(BUILD_DIR)/$(FONTS_DIR)/
+	cp $(RES_DIR)/settings_default.ini $(BUILD_DIR)/$(RES_DIR)/
 
 clean:
 	rm -f $(BIN_MAIN) $(OBJS) $(OBJS_EXT)

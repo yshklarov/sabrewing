@@ -45,6 +45,12 @@ cl /nologo *.obj resources.res /Zi /link %LIBS% /SUBSYSTEM:WINDOWS /ENTRY:mainCR
 echo Copying DLLs...
 copy %SDL2_DIR%\lib\x64\SDL2.dll . /b
 
+:: Copy resources to build directory
+echo Copying resources...
+if not exist res mkdir res
+xcopy /e /i /y %RES_DIR%\fonts res\fonts
+copy %RES_DIR%\settings_default.ini res\
+
 :: Normal exit
 popd
 exit /b 0

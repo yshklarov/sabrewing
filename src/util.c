@@ -342,9 +342,15 @@ void rand_combination(RandState* x, u32 n, u32 k, bool combination[])
 
 /**************** File I/O ****************/
 
-bool file_exists(char const * filename)
+bool file_exists(char const * path)
 {
-    return access(filename, F_OK) == 0;
+  #ifdef _WIN32
+    DWORD attrib = GetFileAttributesA(path);
+    return (attrib != INVALID_FILE_ATTRIBUTES &&
+            !(attrib & FILE_ATTRIBUTE_DIRECTORY));
+  #else
+    return access(path, F_OK) == 0;
+  #endif
 }
 
 

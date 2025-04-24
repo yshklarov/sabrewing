@@ -21,6 +21,7 @@ u64 input_size(u32 n)
 // output location.
 u64 output_size(u32 n)
 {
+    (void)n;
     return 0;
 }
 

@@ -338,9 +338,9 @@ void set_imgui_style(Logger* l, ImGuiIO* io, bool is_dark, u8 font_size)
         ImGui_ImplOpenGL3_DestroyFontsTexture();  // Don't leak memory.
         io->Fonts->Clear();
 
-        char const * font_filename = "../res/fonts/ClearSans-Regular.ttf";
+        char const * font_filename = "res/fonts/ClearSans-Regular.ttf";
         // Lucide icon font (https://lucide.dev/icons/)
-        char const * icon_font_filename = "../res/fonts/" FONT_ICON_FILE_NAME_LC;
+        char const * icon_font_filename = "res/fonts/" FONT_ICON_FILE_NAME_LC;
 
         ImFont* font = 0;
         ImFont* icon_font = 0;
@@ -1453,7 +1453,6 @@ int main(int, char**)
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
     //io.ConfigViewportsNoAutoMerge = true;
     //io.ConfigViewportsNoTaskBarIcon = true;
-    io.IniFilename = "sabrewing.ini";
 
     // Set up platform/renderer backends.
     ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
@@ -1492,6 +1491,23 @@ int main(int, char**)
     Arena global_arena = arena_create(GLOBAL_ARENA_SIZE);
     HostInfo host = {0};
     darray_profrun profiler_runs = darray_profrun_new(&global_arena, 5);
+
+    // Load settings
+    char const * exe_dir = SDL_GetBasePath();
+    usize ini_path_len = strlen(exe_dir) + strlen("settings.ini") + 1;
+    char* ini_path = (char*)arena_push_zero(&global_arena, ini_path_len);
+    snprintf(ini_path, ini_path_len, "%ssettings.ini", exe_dir);
+    usize ini_default_path_len = strlen(exe_dir) + strlen("res/settings_default.ini") + 1;
+    char* ini_default_path = (char*)arena_push_zero(&global_arena, ini_default_path_len);
+    snprintf(ini_default_path, ini_default_path_len, "%sres/settings_default.ini", exe_dir);
+    io.IniFilename = ini_path;
+    if (!file_exists(io.IniFilename)) {
+        // Settings file doesn't exist; load the defaults instead (will be later written
+        // to io.IniFilename). It might make more sense to just do a file copy here.
+        ImGui::LoadIniSettingsFromDisk(ini_default_path);
+        ImGui::SaveIniSettingsToDisk(ini_path);
+    }
+
 
     // Main loop
     bool done = false;
@@ -1665,5 +1681,5 @@ int main(int, char**)
     SDL_DestroyWindow(window);
     SDL_Quit();
 
-    return 0;
+    return EXIT_SUCCESS;
 }
