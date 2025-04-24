@@ -17,6 +17,8 @@ Screenshot
 Installation
 ------------
 
+There's a pre-built binary for Windows: see the GitHub section "releases".
+
 To build and run on Winows, install MSVC, and from a Developer Command Prompt run:
 
     > .\build.bat
@@ -32,14 +34,14 @@ To build and run on Linux:
 Usage
 -----
 
-See `src\problems\` for an example of how to profile algorithms for another problem. You will need
+See `src/problems/` for an example of how to profile algorithms for another problem. You will need
 to recompile.
 
 Profiling Tips
 --------------
 
-It can be challenging to get consistent results when profiling modern hardware, but there are a few
-ways to increase your odds.
+It can be challenging to get consistent results when profiling on modern hardware, but there are a
+few ways to increase your odds.
 
 - Poor repeatability is often caused by dynamic frequency scaling: The CPU will transition to a
   higher "boost" frequency shortly after the workload begins, but remain there only temporarily due
