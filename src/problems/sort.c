@@ -103,7 +103,8 @@ static const Target targets[] =
     {"Gnome sort", "Holds one element, walking left or right.", sort_gnome, NULL},
     {"Simple sort", "Runs in a double loop, comparing and swapping.", sort_simple, NULL},
     {"Broken sort", "Heapsort, but deliberately fails occasionally.", sort_broken, NULL},
-    {"Miracle sort", "Busy-waits for the list to be sorted.", sort_miracle, NULL},
+    // Disabled for now, because there's no way to kill the unresponsive worker thread.
+    //{"Miracle sort", "Busy-waits for the list to be sorted.", sort_miracle, NULL},
 };
 
 bool verify_checksum(u32*, u32*, u32, RandState*, void*);
