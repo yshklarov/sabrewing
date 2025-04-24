@@ -110,7 +110,6 @@ Timedate get_timedate();
 
 /**************** Utility macros & functions ****************/
 
-// TODO I'm not sure that I like asserts -- probably better to crash (abort() or exit()).
 #ifndef assertm
   #define assertm(exp, msg) assert(((void)(msg), (exp)))
 #endif
@@ -184,10 +183,6 @@ void reverse_u32(u64 n, u32* data)
         SWAP_u32(data[i], data[n-1-i]);
     }
 }
-
-
-// TODO Standard mathematical div and mod operators (can copy from stb_divide.h)
-
 
 // Repair a damaged max heap by sifting the given element down to its correct place.
 void util_siftdown(f64* data, u32 siftee, u32 end)
@@ -294,7 +289,6 @@ u32 rand_range_unif(RandState* x, u32 min, u32 max)
     assertm(min <= max, "Cannot sample from empty range.");
     // For uniformity, it's necessary that maximum delta (2^32 - 1) be much smaller than the
     // maximum value of rand_u64() (2^64 - 1).
-    // TODO This is a slow (and biased) algorithm; instead, implement Daniel Lemire's method.
     u32 raw = (u32)(rand_u64(x) % ((u64)max - (u64)min + 1));
     return min + raw;
 }
@@ -480,10 +474,6 @@ u32 print_timedate(u8* buf, u32 buf_len, Timedate td, bool bracketed)
 /**************** Memory management ****************/
 
 // Simple, fixed-size, stack-type arena (aka bump allocator).
-// TODO Make growable: reserve, but don't commit, a huge block of memory.
-// TODO Linux implementation.
-// TODO Implement fixed-size ring buffer on top of Arena,
-//      both with fixed-length and variable-length elements.
 
 typedef struct
 {
@@ -512,7 +502,6 @@ Arena arena_create(usize initial_size)
     }
     byte* data = NULL;
   #ifdef _WIN32
-   // TODO Make it growable: VirtualAlloc(... MEM_RESERVE ...)
     data = (byte*) VirtualAlloc(
             NULL,
             initial_size,
@@ -612,8 +601,6 @@ void arena_tmp_end(ArenaTmp tmp)
 #define SCRATCH_ARENA_SIZE (8 * 1024 * 1024)
 ArenaTmp scratch_get(Arena** conflicts, usize conflict_count)
 {
-    // TODO Make scratch arenas thread-local.
-    // TODO Use growable scratch arenas.
     static Arena scratch[MAX_SCRATCH_ARENAS] = {0};
     bool does_conflict[MAX_SCRATCH_ARENAS] = {0};
     for (usize i = 0; i < conflict_count; ++i) {
@@ -646,7 +633,6 @@ byte* arena_push(Arena* a, usize len)
 {
     if (a->pos + len > a->len) {
         // Not enough space.
-        // TODO Grow the Arena: VirtualAlloc(..., MEM_COMMIT,...); update a->len.
         assertm(false, "No space remaining in Arena. Growing unimplemented.");
         return 0;
     }

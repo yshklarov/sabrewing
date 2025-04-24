@@ -56,9 +56,8 @@ void get_cpu_tsc_features(bool* has_tsc, bool* has_invariant_tsc)
     /*
     // Check support for RDTSCP.
     // (leaf 0x80000001, EDX bit 27)
-    // TODO test this.
     CPUID(regs, 0x80000001);
-    *has_tsc = regs[3] & (1 << 27);
+    *has_rdtscp = regs[3] & (1 << 27);
     */
 
     // Check for invariant TSC.

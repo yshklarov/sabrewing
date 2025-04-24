@@ -516,6 +516,7 @@ void profiler_execute(
     fn_sampler sampler = samplers[params.sampler_idx].fn;
     fn_target target = targets[params.target_idx].fn;
     fn_verifier verifier = verifiers[params.verifier_idx].fn;
+    fn_size scratch_size = targets[params.target_idx].scratch_size;
 
     // The warmup must precede the call to get_timer_overhead().
     waste_cpu_time(params.warmup_ms);
@@ -563,6 +564,9 @@ void profiler_execute(
                 }
 
                 ArenaTmp scratch = scratch_get(NULL, 0);
+                char* scratch_data = scratch_size
+                    ? arena_push_array(scratch.a, char, scratch_size(n))
+                    : NULL;
                 result.units[n_idx * sample_size + i].n = (f64)n;
                 result.units[n_idx * sample_size + i].seed = rand_state_local;
 
@@ -576,7 +580,7 @@ void profiler_execute(
 
                 // Measure the execution time of our target function.
                 u64 timer_initial = get_timer_value(params.timing);
-                target(result.input, n, &rand_state_local, scratch.a);
+                target(result.input, n, &rand_state_local, scratch_data);
                 u64 timer_final = get_timer_value(params.timing);
                 u64 timer_delta = timer_final - timer_initial;
 

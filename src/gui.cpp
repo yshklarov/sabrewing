@@ -331,20 +331,6 @@ void manage_profiler_workers(
 // the arguments, between ImGui frames.
 void set_imgui_style(Logger* l, ImGuiIO* io, bool is_dark, u8 font_size)
 {
-    // TODO Note ImGui has an experimental feature, branch feature/dynamic_fonts, as of 2025-03-05,
-    //      for better font resizing. We'll switch to it once it's ready.
-
-    // TODO load multiple fonts (for code editing) and use ImGui::PushFont()/PopFont() to select
-    //      them (see FONTS.md). AddFontFromFileTTF() returns ImFont*; store it so we can select it
-    //      later.
-
-    // TODO Perhaps '#define IMGUI_ENABLE_FREETYPE' in imconfig.h to use Freetype for higher quality
-    //      font rendering.
-
-    // TODO Detect DPI changes and set style/scaling appropriately. See:
-    // https://github.com/ocornut/imgui/blob/master/
-    //                 docs/FAQ.md#q-how-should-i-handle-dpi-in-my-application
-
     // Don't re-load fonts unless we have to.
     static u8 prev_font_size = 0;
     if (font_size != prev_font_size) {
@@ -581,8 +567,6 @@ void show_log_window(
         ImGui::Checkbox("Show timestamps", &guiconf->log_show_timestamps);
         ImGui::EndPopup();
     }
-
-    // TODO Add log search/filter textbox.
 
     ImGui::Separator();
 
@@ -999,12 +983,8 @@ void show_profiler_windows(
 
     ImGui::End();  // Profiler window
 
-    // TODO Refactor: Move these secondary ImGui windows (profiler result list; profiler plot) into
-    // own helper functions.
-
     ImGui::Begin("Results List");
     static bool visible_display_options = true;
-    // TODO Ewww! Do layout calculations better.
     ImGui::BeginChild("ProfilerResultsChild",
                       ImVec2(0, -(1 + (visible_display_options ? 6 : 0)) *
                              ImGui::GetFrameHeightWithSpacing()));
@@ -1014,9 +994,6 @@ void show_profiler_windows(
             ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthFixed);
             ImGui::TableSetupColumn("Details", ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableSetupColumn("Delete", ImGuiTableColumnFlags_WidthFixed);
-            // TODO Drag & drop results to reorder; support multi-select drag & drop.
-            // TODO Magnifier in results list: Auto-zoom to a single results item, and to all.
-
             bool table_empty = runs->len == 0;
 
             // Table header
@@ -1034,7 +1011,6 @@ void show_profiler_windows(
                 }
             }
             bool all_intent_visible = num_runs_intent_visible == runs->len;
-            // TODO Find, or build, a three-way checkbox with a "partial" setting.
             ImGui::BeginDisabled(table_empty);
             // Match the size/shape of the checkboxes below.
             f32 checkbox_size = ImGui::GetFrameHeight();
@@ -1120,7 +1096,6 @@ void show_profiler_windows(
                 ImGui::Checkbox("", &(runs->data[i].intent_visible));
 
                 ImGui::TableSetColumnIndex(1);
-
                 ImU32 cell_bg_color = {0};
                 switch (run->state) {
                 case PROFRUN_PENDING: {
@@ -1200,19 +1175,11 @@ void show_profiler_windows(
                                       : ICON_LC_X " Failure")
                                    : "Pending")
                                 : "Off");
-                    // TODO Display more details:
-                    //    - Total memory used by this result (i.e., size of local_arena)
-                    //    - Timestamp: Began, finished
-                    //    - Total time elapsed
-                    //    - Profiling progress bar
                     ImGui::TreePop();
                 }
+
                 ImGui::TableSetColumnIndex(2);
-                // TODO Table column with zoom magnifier. See: Icon fonts (ImGui: FONTS.md);
-                //      Zooming to fit will require storing (double min/max for each axis)
-                //      in the struct ProfilerResult.
                 if (ImGui::Button(ICON_LC_X)) {
-                    // TODO Prompt for confirmation, maybe?
                     // Queue deletion for later, so we don't invalidate the loop index.
                     delete_requested = true;
                     delete_idx = i;
@@ -1234,7 +1201,6 @@ void show_profiler_windows(
     }
     ImGui::EndChild();
 
-    // TODO For details on how to plot heterogeneous data, see implot.h:806.
     visible_display_options = ImGui::CollapsingHeader(
                 "Display options",
                 ImGuiTreeNodeFlags_DefaultOpen);
@@ -1300,8 +1266,6 @@ void show_profiler_windows(
                 /* | ImPlotFlags_Crosshairs */  // Crosshairs are laggy on Linux/Wine.
             )) {
 
-        // TODO Allow user to select between nanoseconds and TSC units -- if we can come up with
-        //      a reasonable thing to do when two plots are shown together with different units.
         char const* time_axis_label = "Time (ns)";
         ImPlot::SetupAxes("n", time_axis_label, 0, 0);
         ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_NoButtons);
@@ -1318,7 +1282,6 @@ void show_profiler_windows(
 
             char const* plot_name = targets[params->target_idx].name;
 
-            // TODO Also allow user to pick arbitrary quantiles as upper/lower.
             if (guiconf->visible_data_bounds) {
                 ImPlot::PushStyleVar(ImPlotStyleVar_FillAlpha, 0.25f);
                 ImPlot::PlotShaded(
@@ -1335,7 +1298,6 @@ void show_profiler_windows(
                 ImPlot::PopStyleVar();
             }
 
-            // TODO Line weight should be DPI-independent, not simply a fixed pixel count.
             if (guiconf->visible_data_median) {
                 ImPlot::SetNextLineStyle(IMPLOT_AUTO_COL, 2.0f);
                 ImPlot::PlotLine(
@@ -1362,12 +1324,6 @@ void show_profiler_windows(
 
             if (guiconf->visible_data_individual ||
                 (guiconf->live_view && profrun_busy(run))) {
-                // TODO This gets slow when there are more than 50-100,000 points. Either (easiest)
-                // resample (only plot a subset of points), or (better!) implement our own
-                // PlotScatter that doesn't use ImDrawList but instead renders directly using
-                // graphics shaders; this will also let us use custom/mixed types (u32/u64 for n and
-                // float for vertical axis).
-
                 // NOTE ImPlotMarker_Circle looks nicer than ImPlotMarker_Cross, but 3 times slower.
                 // (The marker geometry is described in implot_items.cpp).
                 /*
@@ -1400,11 +1356,6 @@ void show_profiler_windows(
 
 int main(int, char**)
 {
-    // TODO Restore maximized/restored state from before, just like remedybg. In fact, restore all
-    //      GUI settings.
-    //      See: https://learn.microsoft.com/en-us/windows/
-    //         win32/api/winuser/nf-winuser-showwindow?redirectedfrom=MSDN
-
     #ifdef _WIN32
     SetProcessDPIAware();
     #endif

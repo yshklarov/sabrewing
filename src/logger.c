@@ -38,11 +38,6 @@ typedef struct
     LoggerStr* content;
 } LoggerEntry;
 
-// TODO Make the logger into a ring buffer, overwriting old messages. This requires:
-//      - Implement a fixed-entry-length ring buffer (on top of arena), for store_entries.
-//      - Implement a variable-entry-length ring buffer (on top of arena), for store_strs.
-//      - Build a way to iterate over the contents of bothe the fixed- and variable-length buffers,
-//        e.g., for full-text search.
 typedef struct
 {
     u32 cap;
@@ -93,8 +88,6 @@ u8 const* logger_get_message(Logger l, u32 index)
 // Return the message, with a timestamp, as a null-terminated UTF-8 string, in a
 // statically-allocated object (shared across calls).
 // If the index is invalid, return a null pointer.
-// TODO Also allow printing the log level. In fact, switch to this simpler API:
-//      logger_get_message(Logger l, u32 index, bool timestamp, bool log_level);
 u8 const* logger_get_message_with_timestamp(Logger l, u32 index)
 {
     if (index >= l.len) {

@@ -26,15 +26,17 @@ u64 output_size(u32 n)
 
 /**** Types ****/
 
-typedef void (*fn_sampler)(u32* data, u32 n, RandState* rs, Arena* scratch);
-typedef void (*fn_target)(u32* data, u32 n, RandState* rs, Arena* scratch);
-typedef bool (*fn_verifier)(u32* input, u32* output, u32 n, RandState* rs, Arena* scratch);
+typedef void (*fn_sampler)(u32* data, u32 n, RandState* rs, void* scratch);
+typedef void (*fn_target)(u32* data, u32 n, RandState* rs, void* scratch);
+typedef bool (*fn_verifier)(u32* input, u32* output, u32 n, RandState* rs, void* scratch);
+typedef u64 (*fn_size)(u32 n);
 
 typedef struct
 {
     const char* name;
     const char* description;
     const fn_sampler fn;
+    const fn_size scratch_size;
 } Sampler;
 
 typedef struct
@@ -42,6 +44,7 @@ typedef struct
     const char* name;
     const char* description;
     const fn_target fn;
+    const fn_size scratch_size;
 } Target;
 
 typedef struct
@@ -49,71 +52,73 @@ typedef struct
     const char* name;
     const char* description;
     const fn_verifier fn;
+    const fn_size scratch_size;
 } Verifier;
 
 
 /**** Forward declarations and function arrays ****/
 
-void sample_uniform(u32*, u32, RandState*, Arena*);
-void sample_ordered(u32*, u32, RandState*, Arena*);
-void sample_almostordered(u32*, u32, RandState*, Arena*);
-void sample_reversed(u32*, u32, RandState*, Arena*);
-void sample_constant(u32*, u32, RandState*, Arena*);
-void sample_mixture(u32*, u32, RandState*, Arena*);
+void sample_uniform(u32*, u32, RandState*, void*);
+void sample_ordered(u32*, u32, RandState*, void*);
+void sample_almostordered(u32*, u32, RandState*, void*);
+void sample_reversed(u32*, u32, RandState*, void*);
+void sample_constant(u32*, u32, RandState*, void*);
+void sample_mixture(u32*, u32, RandState*, void*);
 static const Sampler samplers[] =
 {
-    {"Uniform", "Every array occurs with equal probability.", sample_uniform},
-    {"Ordered", "The array is already sorted.", sample_ordered},
-    {"Almost ordered", "Some random transpositions are applied.", sample_almostordered},
-    {"Reversed", "The array is in reverse order.", sample_reversed},
-    {"Constant", "All elements of the array are the same.", sample_constant},
-    {"Mixture", "Pick a sampler at random each time.", sample_mixture},
+    {"Uniform", "Every array occurs with equal probability.", sample_uniform, NULL},
+    {"Ordered", "The array is already sorted.", sample_ordered, NULL},
+    {"Almost ordered", "Some random transpositions are applied.", sample_almostordered, NULL},
+    {"Reversed", "The array is in reverse order.", sample_reversed, NULL},
+    {"Constant", "All elements of the array are the same.", sample_constant, NULL},
+    {"Mixture", "Pick a sampler at random each time.", sample_mixture, NULL},
 };
 
-void sort_heap(u32*, u32, RandState*, Arena*);
-void sort_merge(u32*, u32, RandState*, Arena*);
-void sort_shell(u32*, u32, RandState*, Arena*);
-void sort_quick(u32*, u32, RandState*, Arena*);
-void sort_quickr(u32*, u32, RandState*, Arena*);
-void sort_intro(u32*, u32, RandState*, Arena*);
-void sort_insertion(u32*, u32, RandState*, Arena*);
-void sort_selection(u32*, u32, RandState*, Arena*);
-void sort_bubble(u32*, u32, RandState*, Arena*);
-void sort_gnome(u32*, u32, RandState*, Arena*);
-void sort_simple(u32*, u32, RandState*, Arena*);
-void sort_broken(u32*, u32, RandState*, Arena*);
-void sort_miracle(u32*, u32, RandState*, Arena*);
+void sort_heap(u32*, u32, RandState*, void*);
+void sort_merge(u32*, u32, RandState*, void*);
+u64 sort_merge_scratch_size(u32);
+void sort_shell(u32*, u32, RandState*, void*);
+void sort_quick(u32*, u32, RandState*, void*);
+void sort_quickr(u32*, u32, RandState*, void*);
+void sort_intro(u32*, u32, RandState*, void*);
+void sort_insertion(u32*, u32, RandState*, void*);
+void sort_selection(u32*, u32, RandState*, void*);
+void sort_bubble(u32*, u32, RandState*, void*);
+void sort_gnome(u32*, u32, RandState*, void*);
+void sort_simple(u32*, u32, RandState*, void*);
+void sort_broken(u32*, u32, RandState*, void*);
+void sort_miracle(u32*, u32, RandState*, void*);
 static const Target targets[] =
 {
-    {"Heapsort", "Builds max-heap, then moves root to end repeatedly.", sort_heap},
-    {"Merge sort", "Sorts each half separately, then merges them.", sort_merge},
-    {"Shellsort", "Insertion-sorts kth items for successively smaller k.", sort_shell},
-    {"Quicksort", "Splits array according to a pivot, then sorts each side.", sort_quick},
-    {"Quicksort (randomized)", "Picks the pivot randomly.", sort_quickr},
-    {"Introsort", "Like quicksort, delegating to heap- and insertion sort.", sort_intro},
-    {"Insertion sort", "Builds a sorted array element-by-element.", sort_insertion},
-    {"Selection sort", "Finds least element of those remaining, and appends it.", sort_selection},
-    {"Bubble sort", "Compares and swaps adjacent pairs.", sort_bubble},
-    {"Gnome sort", "Holds one element, walking left or right.", sort_gnome},
-    {"Simple sort", "Runs in a double loop, comparing and swapping.", sort_simple},
-    {"Broken sort", "Heapsort, but deliberately fails occasionally.", sort_broken},
-    {"Miracle sort", "Busy-waits for the list to be sorted.", sort_miracle},
+    {"Heapsort", "Builds max-heap, then moves root to end repeatedly.", sort_heap, NULL},
+    {"Merge sort", "Sorts each half separately, then merges them.", sort_merge, sort_merge_scratch_size},
+    {"Shellsort", "Insertion-sorts kth items for successively smaller k.", sort_shell, NULL},
+    {"Quicksort", "Splits array according to a pivot, then sorts each side.", sort_quick, NULL},
+    {"Quicksort (randomized)", "Picks the pivot randomly.", sort_quickr, NULL},
+    {"Introsort", "Like quicksort, delegating to heap- and insertion sort.", sort_intro, NULL},
+    {"Insertion sort", "Builds a sorted array element-by-element.", sort_insertion, NULL},
+    {"Selection sort", "Finds least element of those remaining, and appends it.", sort_selection, NULL},
+    {"Bubble sort", "Compares and swaps adjacent pairs.", sort_bubble, NULL},
+    {"Gnome sort", "Holds one element, walking left or right.", sort_gnome, NULL},
+    {"Simple sort", "Runs in a double loop, comparing and swapping.", sort_simple, NULL},
+    {"Broken sort", "Heapsort, but deliberately fails occasionally.", sort_broken, NULL},
+    {"Miracle sort", "Busy-waits for the list to be sorted.", sort_miracle, NULL},
 };
 
-bool verify_checksum(u32*, u32*, u32, RandState*, Arena*);
-bool verify_ordered(u32*, u32*, u32, RandState*, Arena*);
-bool verify_all(u32*, u32*, u32, RandState*, Arena*);
+bool verify_checksum(u32*, u32*, u32, RandState*, void*);
+bool verify_ordered(u32*, u32*, u32, RandState*, void*);
+bool verify_all(u32*, u32*, u32, RandState*, void*);
 static const Verifier verifiers[] =
 {
-    {"All", "Runs all verifiers in sequence.", verify_all},
-    {"Checksum", "Uses a commutative hash (invariant under permutations).", verify_checksum},
-    {"Ordered", "Checks that the output is in ascending order.", verify_ordered},
+    {"All", "Runs all verifiers in sequence.", verify_all, NULL},
+    {"Checksum", "Uses a commutative hash (invariant under permutations).", verify_checksum, NULL},
+    {"Ordered", "Checks that the output is in ascending order.", verify_ordered, NULL},
 };
 
 
 /**** Samplers ****/
 
-void sample_uniform(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sample_uniform(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch;
     for (u32 k = 0; k < n; ++k) {
@@ -121,7 +126,7 @@ void sample_uniform(u32* data, u32 n, RandState* rs, Arena* scratch)
     }
 }
 
-void sample_ordered(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sample_ordered(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch;
     if (n == 0) return;
@@ -133,7 +138,7 @@ void sample_ordered(u32* data, u32 n, RandState* rs, Arena* scratch)
     }
 }
 
-void sample_almostordered(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sample_almostordered(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch;
     if (n == 0) return;
@@ -146,14 +151,14 @@ void sample_almostordered(u32* data, u32 n, RandState* rs, Arena* scratch)
     }
 }
 
-void sample_reversed(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sample_reversed(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch;
     sample_ordered(data, n, rs, scratch);
     reverse_u32(n, data);
 }
 
-void sample_constant(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sample_constant(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch;
     u32 value = rand_range_unif(rs, 0, n);
@@ -162,7 +167,7 @@ void sample_constant(u32* data, u32 n, RandState* rs, Arena* scratch)
     }
 }
 
-void sample_mixture(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sample_mixture(u32* data, u32 n, RandState* rs, void* scratch)
 {
     u32 choice = rand_range_unif(rs, 0, ARRAY_SIZE(samplers) - 2);
     samplers[choice].fn(data, n, rs, scratch);
@@ -173,7 +178,7 @@ void sample_mixture(u32* data, u32 n, RandState* rs, Arena* scratch)
 
 // A silly variant of the exchange sort. Reference:
 // Stanley Fung, Is this the simplest (and most surprising) sorting algorithm ever?, 2021.
-void sort_simple(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sort_simple(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch; (void)rs;
     if (n < 2) return;
@@ -186,7 +191,7 @@ void sort_simple(u32* data, u32 n, RandState* rs, Arena* scratch)
     }
 }
 
-void sort_bubble(u32* data, u32 n, RandState* rs, Arena* scratch) {
+void sort_bubble(u32* data, u32 n, RandState* rs, void* scratch) {
     (void)scratch; (void)rs;
     if (n < 2) return;
     bool swapped = false;
@@ -201,7 +206,7 @@ void sort_bubble(u32* data, u32 n, RandState* rs, Arena* scratch) {
     } while (swapped);
 }
 
-void sort_selection(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sort_selection(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch; (void)rs;
     if (n < 2) return;
@@ -219,7 +224,7 @@ void sort_selection(u32* data, u32 n, RandState* rs, Arena* scratch)
     }
 }
 
-void sort_insertion(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sort_insertion(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch; (void)rs;
     if (n < 2) return;
@@ -234,7 +239,7 @@ void sort_insertion(u32* data, u32 n, RandState* rs, Arena* scratch)
     }
 }
 
-void sort_gnome(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sort_gnome(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch; (void)rs;
     if (n < 2) return;
@@ -275,7 +280,7 @@ void sort_quick_(u32* data, u32 n)
 }
 
 // WARNING Recursive: may cause stack overflow.
-void sort_quick(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sort_quick(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch; (void)rs;
     if (n < 2) return;
@@ -316,7 +321,7 @@ void sort_intro_(u32* data, u32 n, u32 max_recurse)
     }
 }
 
-void sort_intro(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sort_intro(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch; (void)rs;
     if (n < 2) return;
@@ -367,7 +372,7 @@ void sort_quickr_(u32* data, u32 n, RandState* rs)
 }
 
 // WARNING Recursive: may cause stack overflow.
-void sort_quickr(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sort_quickr(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch;
     if (n < 2) return;
@@ -388,7 +393,7 @@ u32 sort_shell_tokuda_gap(u32 k)
     }
 }
 
-void sort_shell(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sort_shell(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch; (void)rs;
     if (n < 2) return;
@@ -408,12 +413,17 @@ void sort_shell(u32* data, u32 n, RandState* rs, Arena* scratch)
     } while (gapk > 0);
 }
 
-void sort_merge(u32* data, u32 n, RandState* rs, Arena* scratch)
+u64 sort_merge_scratch_size(u32 n)
+{
+    return sizeof(u32) * n;
+}
+
+void sort_merge(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)rs;
     if (n < 2) return;
     u32* src = data;
-    u32* dst = arena_push_array(scratch, u32, n);
+    u32* dst = (u32*)scratch;
     u32 half = 1;
     u32 stride = 2;
     u32 stride_max = n * 2;
@@ -492,7 +502,7 @@ void maxheap(u32* data, u32 n)
     }
 }
 
-void sort_heap(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sort_heap(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch; (void)rs;
     if (n < 2) return;
@@ -504,7 +514,7 @@ void sort_heap(u32* data, u32 n, RandState* rs, Arena* scratch)
     } while (n > 1);
 }
 
-void sort_broken(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sort_broken(u32* data, u32 n, RandState* rs, void* scratch)
 {
     f32 chance_of_failure = 0.01f;
     sort_heap(data, n, rs, scratch);
@@ -514,7 +524,7 @@ void sort_broken(u32* data, u32 n, RandState* rs, Arena* scratch)
     }
 }
 
-void sort_miracle(u32* data, u32 n, RandState* rs, Arena* scratch)
+void sort_miracle(u32* data, u32 n, RandState* rs, void* scratch)
 {
     (void)scratch; (void)rs;
     bool sorted = false;
@@ -532,7 +542,7 @@ void sort_miracle(u32* data, u32 n, RandState* rs, Arena* scratch)
 
 /**** Verifiers ****/
 
-bool verify_ordered(u32* input, u32* output, u32 n, RandState* rs, Arena* scratch)
+bool verify_ordered(u32* input, u32* output, u32 n, RandState* rs, void* scratch)
 {
     (void)rs; (void)scratch; (void)input;
     if (n < 2) {
@@ -561,13 +571,13 @@ u64 verify_checksum_(u32* data, u32 n)
     return checksum;
 }
 
-bool verify_checksum(u32* input, u32* output, u32 n, RandState* rs, Arena* scratch)
+bool verify_checksum(u32* input, u32* output, u32 n, RandState* rs, void* scratch)
 {
     (void)rs; (void)scratch;
     return verify_checksum_(input, n) == verify_checksum_(output, n);
 }
 
-bool verify_all(u32* input, u32* output, u32 n, RandState* rs, Arena* scratch)
+bool verify_all(u32* input, u32* output, u32 n, RandState* rs, void* scratch)
 {
     return
         verify_checksum(input, output, n, rs, scratch) &&

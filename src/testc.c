@@ -25,10 +25,6 @@
 #include "problems/sort.c"
 #include "profiler.c"
 
-// TODO Make this into a unit test suite.
-// TODO (Perhaps) test for out-of-memory errors: https://news.ycombinator.com/item?id=37672784
-// TODO Set up convenient testing with valgrind and/or LLVM sanitizers
-//      (See: https://nullprogram.com/blog/2023/04/29/)
 
 void test_logger()
 {
