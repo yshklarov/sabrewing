@@ -1,15 +1,12 @@
 Sabrewing
 =========
 
-This is an algorithmic profiler for x86-64 systems running Windows or Linux. It's a **very early
-prototype** and not ready for serious use.
+This is an algorithmic profiler for x86-64 systems running Windows or Linux. It is a prototype, and
+not intended for serious use.
 
 An algorithmic profiler measures the running time of a program as a function of the size of its
 input (or, more generally, as a function of an arbitrary parameter on the set of all possible
 inputs). The most basic use case is to get an empirical measure of a program's average time complexity with respect to a given probability distribution on its input.
-
-This project aims to facilitate the development of algorithms by making it simple to visualize and
-compare their performance characteristics.
 
 Screenshot
 ----------
@@ -30,6 +27,12 @@ To build and run on Linux:
     $ make
     $ cd build
     $ ./sabrewing
+
+Usage
+-----
+
+See `src\problems\` for an example of how to profile algorithms for another problem. You will need
+to recompile.
 
 Profiling Tips
 --------------
