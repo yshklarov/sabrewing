@@ -6,7 +6,8 @@ not intended for serious use.
 
 An algorithmic profiler measures the running time of a program as a function of the size of its
 input (or, more generally, as a function of an arbitrary parameter on the set of all possible
-inputs). The most basic use case is to get an empirical measure of a program's average time complexity with respect to a given probability distribution on its input.
+inputs). This lets us empirically find the average time complexity with respect to any given
+probability distribution on the input.
 
 Screenshot
 ----------

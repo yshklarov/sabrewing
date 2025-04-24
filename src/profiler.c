@@ -116,6 +116,7 @@ typedef struct
 
     u32* input;  // Scratch space for storing input to targets.
     u32* input_clone;  // For verifier.
+    u32* output;  // Not used by problems that operate in-place.
 
     ProfilerResultUnit* units;
     ProfilerResultGroup* groups;
@@ -184,6 +185,15 @@ ProfilerResult profiler_result_create(ProfilerParams params)
     ProfilerResult result = {0};
     bool clone_input = params.verifier_enabled;
     usize arena_len_required = 0;
+    u64 input_size_max = 0;
+    u64 output_size_max = 0;
+
+    loop_over_range_u32(params.ns, n, n_idx) {
+        u64 input_size_n = input_size(n);
+        input_size_max = MAX(input_size_max, input_size_n);
+        u64 output_size_n = output_size(n);
+        output_size_max = MAX(output_size_max, output_size_n);
+    }
 
     // Check for num_units integer overflow.
     if (params.num_units == 0) {
@@ -193,7 +203,9 @@ ProfilerResult profiler_result_create(ProfilerParams params)
     // Reserve local memory for the result.
 
     // Memory for one or two copies of the input.
-    arena_len_required += (1 + (u32)clone_input) * params.ns.upper * sizeof(params.ns.upper);
+    arena_len_required += (1 + (u32)clone_input) * input_size_max;
+    // Memory for output (if required).
+    arena_len_required += output_size_max;
     // Result data.
     arena_len_required += params.num_units * sizeof(ProfilerResultUnit);
     arena_len_required += params.num_groups * sizeof(ProfilerResultGroup);
@@ -208,11 +220,16 @@ ProfilerResult profiler_result_create(ProfilerParams params)
 
     // Initialize the result struct.
 
-    result.input = arena_push_array_zero(&result.local_arena, u32, params.ns.upper);
+    result.input = (u32*)arena_push_zero(&result.local_arena, input_size_max);
     if (clone_input) {
-        result.input_clone = arena_push_array_zero(&result.local_arena, u32, params.ns.upper);
+        result.input_clone = (u32*)arena_push_zero(&result.local_arena, input_size_max);
     } else {
         result.input_clone = NULL;
+    }
+    if (output_size_max != 0) {
+        result.output = (u32*)arena_push_zero(&result.local_arena, output_size_max);
+    } else {
+        result.output = NULL;
     }
     result.units = arena_push_array_zero(
             &result.local_arena, ProfilerResultUnit, params.num_units);
